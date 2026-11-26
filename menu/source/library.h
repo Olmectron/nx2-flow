@@ -103,8 +103,9 @@ std::string SlotFolder(const Game& game, const std::string& slot);
 /// them, and not "default". Empty when nothing usable is left of what was typed.
 std::string CleanSlotName(const std::string& typed);
 
-/// A folder and everything in it, copied to a folder that isn't there yet. False, with why,
-/// when something couldn't be read or written (what was copied until then stays).
+/// A folder and everything in it, copied file-by-file via a `.tmp` staging file that is
+/// flushed, closed and renamed into place so an interrupted or failed write never leaves a
+/// half-written destination file. False, with why, when something couldn't be read or written.
 bool CopyFolder(const std::string& from_card_path, const std::string& to_card_path, std::string& error);
 /// A folder and everything in it, deleted.
 bool RemoveFolder(const std::string& card_path);

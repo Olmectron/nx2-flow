@@ -3,6 +3,7 @@
 #include "library.h"
 
 #include <algorithm>
+#include <cerrno>
 #include <cstdio>
 #include <cstring>
 #include <set>
@@ -436,38 +437,78 @@ std::string CleanSlotName(const std::string& typed) {
     return Lower(name) == "default" ? std::string{} : name;
 }
 
+namespace {
+
+bool CopyFileAtomic(const std::string& src_path, const std::string& dst_path,
+                    const std::string& name, std::vector<char>& block, std::string& error) {
+    std::FILE* in = std::fopen(src_path.c_str(), "rb");
+    if (!in) {
+        error = name + " couldn't be read";
+        return false;
+    }
+    const std::string tmp_path = dst_path + ".tmp";
+    std::FILE* out = std::fopen(tmp_path.c_str(), "wb");
+    if (!out) {
+        std::fclose(in);
+        error = name + " couldn't be written";
+        return false;
+    }
+    bool ok = true;
+    for (;;) {
+        const std::size_t got = std::fread(block.data(), 1, block.size(), in);
+        if (got == 0) {
+            ok = std::ferror(in) == 0;
+            break;
+        }
+        if (std::fwrite(block.data(), 1, got, out) != got) {
+            ok = false;
+            break;
+        }
+    }
+    std::fclose(in);
+    if (ok && (std::fflush(out) != 0 || std::ferror(out) != 0)) {
+        ok = false;
+    }
+    if (std::fclose(out) != 0) {
+        ok = false;
+    }
+    if (!ok) {
+        std::remove(tmp_path.c_str());
+        error = name + " couldn't be copied (is the card full?)";
+        return false;
+    }
+    if (std::rename(tmp_path.c_str(), dst_path.c_str()) != 0) {
+        const int err = errno;
+        bool renamed = false;
+        // Horizon OS (fsFsRenameFile) and Windows refuse rename() onto an existing file.
+        if (err == EEXIST
+#ifdef _WIN32
+            || err == EACCES
+#endif
+        ) {
+            if (std::remove(dst_path.c_str()) == 0) {
+                renamed = std::rename(tmp_path.c_str(), dst_path.c_str()) == 0;
+            }
+        }
+        if (!renamed) {
+            std::remove(tmp_path.c_str());
+            error = name + " couldn't be copied (is the card full?)";
+            return false;
+        }
+    }
+    return true;
+}
+
+} // namespace
+
 bool CopyFolder(const std::string& from_card_path, const std::string& to_card_path, std::string& error) {
     MakeFolders(to_card_path);
     std::vector<std::string> files;
     const std::vector<std::string> folders = ListFolders(from_card_path, &files);
     std::vector<char> block(1 << 20);
     for (const std::string& name : files) {
-        std::FILE* in = std::fopen(OnCard(from_card_path + "/" + name).c_str(), "rb");
-        if (!in) {
-            error = name + " couldn't be read";
-            return false;
-        }
-        std::FILE* out = std::fopen(OnCard(to_card_path + "/" + name).c_str(), "wb");
-        if (!out) {
-            std::fclose(in);
-            error = name + " couldn't be written";
-            return false;
-        }
-        bool ok = true;
-        for (;;) {
-            const std::size_t got = std::fread(block.data(), 1, block.size(), in);
-            if (got == 0) {
-                ok = std::ferror(in) == 0;
-                break;
-            }
-            if (std::fwrite(block.data(), 1, got, out) != got) {
-                ok = false;
-                break;
-            }
-        }
-        std::fclose(in);
-        if (std::fclose(out) != 0 || !ok) {
-            error = name + " couldn't be copied (is the card full?)";
+        if (!CopyFileAtomic(OnCard(from_card_path + "/" + name), OnCard(to_card_path + "/" + name),
+                            name, block, error)) {
             return false;
         }
     }
