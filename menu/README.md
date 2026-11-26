@@ -12,6 +12,10 @@ out. It is under the **GNU General Public License, version 2 or later**, as toro
   reads only the superblock, the packages and their facts (title id, title, publisher, version, icon): a few kilobytes,
   whatever the file's size. What it read is kept in `/nx2-flow/cache/`, by the file's name, size and time, so a library opens
   without reading the files again.
+- **A NUP file in parts is one game**: a FAT32 card keeps no file of 4 GiB or more, so a game is copied onto it as
+  `Game.nup.001`, `.002`, ... (docs/layout.md). The parts stand on the shelf as `Game.nup`, and what the game says of itself is
+  read through them. A set that isn't whole (a part missing, parts of more than one size, fewer bytes than the file says it is)
+  is on the shelf all the same, with why it can't be started.
 - **Shows them as cases on a shelf**, in nine ways (`L` / `R`): a game's cover from `/nx2-flow/covers` when there is one, and
   otherwise a case made of the icon the NUP file has and the game's name.
 - **A game's options** (`Y`):
@@ -66,6 +70,9 @@ The previews, on a PC (a PC `g++`, Python and Pillow):
 make preview            or, on Windows:   sh tools/render_previews.sh
 ```
 
+The PC compiler is one with a POSIX C library: on Windows, msys2's own (`pacman -S gcc` in its MSYS shell), as the receiver's
+sockets and the folders' calls are POSIX's; MinGW's won't do.
+
 That builds `preview/main.cpp` with the menu's own code, makes a pretend card (`tools/make_fake_card.py`: tiny NUP files of
 games that don't exist, with made-up names, icons, covers and saved data), plays the menu through its screens and writes them
 to `out/preview/*.png`. What the previews show is what the console's screen shows: the menu draws on a plain canvas either way.
@@ -74,6 +81,11 @@ In the previews the receiver of files is a stand-in that says what a scene needs
 ```
 make nettest            out/preview/transfer_test
 ```
+
+Tried on a PC, against what should happen (`make partstest`): `preview/parts_test.cpp` makes a pretend card of its own and
+looks for each game in parts on the shelf (whole, cut short, a part missing, parts not of one size, numbered from 0, beside the
+whole file, more parts than the game loader reads), and `tools/test_transfer_parts.py` speaks to the receiver as the program
+that sends does, with a NUP file too large for one file of the card.
 
 ## Files from a computer
 
@@ -90,6 +102,11 @@ How a file is received (`source/transfer.cpp`):
 - the file is given its whole size before the first byte is written (`<name>.ttpart`, renamed at the end);
 - the pace can be capped, from the first byte, for a card that takes long over a write now and then.
 
+A NUP file too large for one file of the card (4 GiB or more, on a FAT32 card) comes in parts, `Game.nup.001`, `.002`, ...,
+each as large as the others but the last, as the game loader reads one (docs/layout.md). Whether the card can hold the file as
+one is asked of it by reserving the file's size, as for any file; a file of any other kind that it can't hold is refused, as
+before. A file in parts is sent back, hashed and deleted by the file's name, as one.
+
 The four numbers are keys of `/nx2-flow/menu.cfg`, always written there so that they are found:
 
 | key | meaning | default |
@@ -98,6 +115,7 @@ The four numbers are keys of `/nx2-flow/menu.cfg`, always written there so that 
 | `transfer_queue` | blocks that may wait for the card before the network is held back (2 to 64) | 8 |
 | `transfer_kbps` | the most taken from the network, KB a second; 0: no limit. Also in Settings, "Most the receiver takes" | 0 |
 | `transfer_rcvbuf_kb` | the receiving socket's own buffer, in KB (64 to 2048) | 256 |
+| `transfer_part_mb` | how large each part is of a NUP file received in parts, in MB (1 to 4095). By hand: Settings has no row for it | 4095 |
 
 Every file of 8 MB or more leaves its figures in `/nx2-flow/transfer.log`: seconds, MB a second, **the longest time with nothing
 written** and when it was, **how full the queue got**, how many writes took 100 ms, 500 ms, 2 s or more, the slowest write, and
@@ -141,9 +159,9 @@ that ties the two was found. So nothing is guessed: a game gets covers from Game
 |---|---|
 | `source/app.cpp`, `app.h` | the menu: the shelf, a game's options, its slots and advanced options, the settings, the folder picker, the file receiver's screen |
 | `source/library.cpp`, `library.h` | the card's layout, the two settings files, the list of games and its cache, slots of saved data |
-| `source/nup.cpp`, `nup.h` | what the menu reads of a NUP file |
+| `source/nup.cpp`, `nup.h` | what the menu reads of a NUP file, and how the card keeps it: one file, or parts gathered into one and judged whole or not |
 | `source/covers.cpp`, `covers.h` | cover files, `ids.txt`, the download |
-| `source/transfer.cpp`, `transfer.h` | files from a computer: Toronja Transfer's protocol, received through a queue |
+| `source/transfer.cpp`, `transfer.h` | files from a computer: Toronja Transfer's protocol, received through a queue; a NUP file too large for the card, in parts |
 | `source/images.cpp`, `stb_image.h` | JPEG and PNG, decoded and made smaller |
 | `source/ui_canvas.h`, `ui_views.h` | toronja's canvas, text, shelf, cases and buttons, as changed by `tools/adapt_ui.py` |
 | `source/font_baked.h` | the font, as glyph pictures (Aileron Regular, CC0) |

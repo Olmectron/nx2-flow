@@ -15,6 +15,9 @@
 //   - the socket's own buffer is small, so that "held back" reaches the sender at once;
 //   - the pace can be capped (KB a second), for a card that takes long over a write now and
 //     then: a pace it always keeps is quicker than one it chokes on.
+// A file too large for the card to hold as one (4 GiB or more, on a FAT32 card) is received in
+// parts, "<name>.nup.001", ".002", ..., as the game loader reads a NUP file; and it is sent
+// back, hashed and deleted as the one file it is.
 // Each file's log line says what there is to tune by: seconds, MB a second, the longest time
 // with nothing written, and how full the queue got.
 
@@ -29,12 +32,17 @@ namespace Transfer {
 inline constexpr int kPort = 28302;
 
 /// What can be tuned (menu.cfg: transfer_block_kb, transfer_queue, transfer_kbps,
-/// transfer_rcvbuf_kb). Out-of-range values are brought into range by Start.
+/// transfer_rcvbuf_kb, transfer_part_mb). Out-of-range values are brought into range by Start.
 struct Tuning {
     int block_kb{1024};  // One write to the card: 64 to 4096.
     int queue{8};        // Blocks between the network and the card: 2 to 64.
     int kbps{0};         // The most taken from the network, KB a second; 0: no cap.
     int rcvbuf_kb{256};  // The socket's own buffer: 64 to 2048.
+    int part_mb{4095};   // How large each part is of a NUP file received in parts: 1 to 4095.
+    /// The most one file may hold where files are received, in bytes. 0: whatever the card
+    /// holds, asked of it as each file is received. (Said beforehand only to try the parts on a
+    /// computer: preview/transfer_test.)
+    std::uint64_t most_one_file{0};
 };
 
 struct State {

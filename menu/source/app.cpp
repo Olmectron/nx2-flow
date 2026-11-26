@@ -9,6 +9,7 @@
 #include <memory>
 
 #include "covers.h"
+#include "nup.h"
 #include "platform.h"
 #include "transfer.h"
 
@@ -33,22 +34,13 @@ enum SettingRow { kSetFolder, kSetShelf, kSetCovers, kSetCases, kSetTheme, kSetD
 constexpr int kMemoryLow = 2048, kMemoryHigh = 8992, kMemoryStep = 128;
 constexpr int kRoomLow = 128, kRoomHigh = 2048, kRoomStep = 64, kRoomDefault = 384;
 
+// How large the parts are in which a NUP file too large for the card is received (a FAT32 card keeps no file of 4 GiB or
+// more). By hand in menu.cfg, transfer_part_mb; not in Settings, as it is seldom changed.
+constexpr int kPartLow = 1, kPartHigh = 4095, kPartDefault = 4095;
+
 // The paces the receiver can be held to, KB a second (0: none). Any other number can be
 // written in menu.cfg by hand.
 constexpr int kCapChoices[] = {0, 512, 1024, 2048, 3072, 4096, 6144, 8192, 12288, 16384, 24576, 32768, 49152};
-
-bool EndsWithNup(const std::string& name) {
-    if (name.size() < 4) {
-        return false;
-    }
-    std::string tail = name.substr(name.size() - 4);
-    for (char& ch : tail) {
-        if (ch >= 'A' && ch <= 'Z') {
-            ch = static_cast<char>(ch - 'A' + 'a');
-        }
-    }
-    return tail == ".nup";
-}
 
 std::string LowerCase(std::string s) {
     for (char& ch : s) {
@@ -149,6 +141,7 @@ void App::LoadSettings() {
     transfer_block_kb = Number(Value(cfg, "transfer_block_kb"), 1024);
     transfer_queue = Number(Value(cfg, "transfer_queue"), 8);
     transfer_rcvbuf_kb = Number(Value(cfg, "transfer_rcvbuf_kb"), 256);
+    transfer_part_mb = Number(Value(cfg, "transfer_part_mb"), kPartDefault);
 }
 
 void App::SaveSettings() {
@@ -163,6 +156,7 @@ void App::SaveSettings() {
     cfg["transfer_block_kb"] = std::to_string(transfer_block_kb);
     cfg["transfer_queue"] = std::to_string(transfer_queue);
     cfg["transfer_rcvbuf_kb"] = std::to_string(transfer_rcvbuf_kb);
+    cfg["transfer_part_mb"] = std::to_string(transfer_part_mb);
     if (!WriteSettings(kMenuCfg, cfg)) {
         Notice("The settings couldn't be written to the card", true);
     }
@@ -858,9 +852,9 @@ void App::OpenPicker() {
 }
 
 void App::PickerLook() {
-    std::vector<std::string> files;
-    picker_folders = ListFolders(picker_path, &files);
-    picker_nups = static_cast<int>(std::count_if(files.begin(), files.end(), EndsWithNup));
+    picker_folders = ListFolders(picker_path);
+    // (the parts of a container are one container here, as on the shelf)
+    picker_nups = static_cast<int>(Nup::Find(OnCard(picker_path.empty() ? "/" : picker_path)).size());
     picker_cursor = 0;
 }
 
@@ -914,6 +908,7 @@ void App::OpenTransfer() {
     tuning.queue = transfer_queue;
     tuning.kbps = transfer_kbps;
     tuning.rcvbuf_kb = transfer_rcvbuf_kb;
+    tuning.part_mb = std::clamp(transfer_part_mb, kPartLow, kPartHigh);
     Transfer::Start(tuning);
     Platform::KeepAwake(true);
     transfer_files_before = Transfer::Look().files;
@@ -1317,7 +1312,7 @@ void App::DrawSheet(Canvas& c) {
         {"Log", there(folder + "/log.txt", "", "(none yet)")},
         {"Crash report", there(folder + "/crash.txt", "(a run ended badly: the file to send with a report)", "(none)")},
         {"Saved data", there(SlotFolder(*game, SlotInUse()), "", "(none yet)")},
-        {"File", game->path + "   " + HumanSize(game->size)},
+        {"File", game->path + "   " + HumanSize(game->size) + (game->parts > 1 ? "   in " + std::to_string(game->parts) + " parts" : "")},
     };
     int fy = y + h - 134;
     for (const auto& [label, value] : facts) {

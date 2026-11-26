@@ -27,11 +27,6 @@ std::string Lower(std::string s) {
     return s;
 }
 
-bool EndsWith(const std::string& s, const char* tail) {
-    const std::size_t n = std::strlen(tail);
-    return s.size() >= n && Lower(s.substr(s.size() - n)) == tail;
-}
-
 std::string Trim(std::string s) {
     while (!s.empty() && (s.back() == '\r' || s.back() == '\n' || s.back() == ' ' || s.back() == '\t')) {
         s.pop_back();
@@ -187,8 +182,6 @@ std::string HumanSize(std::uint64_t bytes) {
 
 std::vector<Game> ScanGames(const std::string& games_folder) {
     std::vector<Game> games;
-    std::vector<std::string> files;
-    ListFolders(games_folder, &files);
 
     // What was read before: a line for each container (name, size, time, then what it said).
     const std::string cache_path = std::string{kCache} + "/library.txt";
@@ -206,19 +199,13 @@ std::vector<Game> ScanGames(const std::string& games_folder) {
 
     bool changed = false;
     std::vector<std::vector<std::string>> lines;
-    for (const std::string& file : files) {
-        if (!EndsWith(file, ".nup")) {
-            continue;
-        }
+    // (a container is one file, "Game.nup", or in parts, "Game.nup.001", ".002", ...: a file too large for a FAT32 card. Its
+    // size and time, by which what was read of it is kept, are the parts' in all, and the newest of theirs)
+    for (const Nup::Kept& kept : Nup::Find(OnCard(games_folder.empty() ? "/" : games_folder))) {
         Game game;
-        game.file = file;
-        game.path = games_folder + "/" + file;
-        struct stat st;
-        if (stat(OnCard(game.path).c_str(), &st) != 0) {
-            continue;
-        }
-        game.size = static_cast<std::uint64_t>(st.st_size);
-        game.mtime = static_cast<std::int64_t>(st.st_mtime);
+        game.file = kept.file;
+        game.path = games_folder + "/" + kept.file;
+        game.size = kept.size, game.mtime = kept.mtime, game.parts = static_cast<int>(kept.parts.size());
         const std::string size_text = std::to_string(game.size), time_text = std::to_string(game.mtime);
         const auto it = known.find(game.path);
         if (it != known.end() && it->second[1] == size_text && it->second[2] == time_text) {
@@ -234,7 +221,10 @@ std::vector<Game> ScanGames(const std::string& games_folder) {
             changed = true;
             Nup::Info info;
             std::string error;
-            if (Nup::Read(OnCard(game.path), info, error)) {
+            // (what a container in parts says of itself is shown all the same when a part of it is missing: its name, its
+            // icon, with why it can't be started)
+            const bool read = Nup::Read(kept, info, error);
+            if (read) {
                 game.title_id = info.title_id;
                 game.id = Hex16(info.title_id);
                 game.title = Flat(info.title);
@@ -254,12 +244,11 @@ std::vector<Game> ScanGames(const std::string& games_folder) {
                         std::fclose(out);
                     }
                 }
-            } else {
-                game.error = error;
             }
+            game.error = !kept.whole ? kept.error : read ? std::string{} : error;
         }
         if (game.title.empty()) {
-            game.title = file.substr(0, file.size() - 4); // (the file's own name, without ".nup")
+            game.title = game.file.substr(0, game.file.size() - 4); // (the file's own name, without ".nup")
         }
         lines.push_back({game.path, size_text, time_text, game.id, game.title, game.publisher, game.version, game.note, game.error});
         games.push_back(std::move(game));

@@ -6,7 +6,8 @@ names, icons and covers, laid out as docs/layout.md says. Nothing of a real game
     python tools/make_fake_card.py <folder>          (needs Pillow)
 
 A container made here has what the menu reads of one and nothing else: the superblock, a table of contents with its packages
-(no files), and each package's block of facts.
+(no files), and each package's block of facts. Three more are in parts, in nx2-flow/parts of the pretend card: a file too large
+for a FAT32 card, as the card keeps it.
 """
 import hashlib
 import io
@@ -100,9 +101,22 @@ def nup(packages):
     toc = (b'TOC\x01' + struct.pack('<IQQQQ', n, n, 0, pool_at, len(pool))).ljust(0x30, b'\0') + rows
     toc += b''.join(struct.pack('<IIII', 0, 0, 0, 0).ljust(0x18, b'\0') for _ in range(n)) + pool
     assert len(toc) == toc_size
+    # (the superblock says how long the whole file is, as a real one does: by it the menu and the game loader tell a NUP kept
+    # in parts from one whose parts aren't all there)
     head = (b'NUP\x01' + b'\0' * 4 + struct.pack('<QQ', 0x80, toc_size) + hashlib.sha256(toc).digest()
-            + struct.pack('<QQI', meta_at + len(blocks), 0, n)).ljust(0x80, b'\0')
+            + struct.pack('<QQI', meta_at + len(blocks), 0x80 + toc_size + len(blocks), n)).ljust(0x80, b'\0')
     return head + toc + blocks
+
+
+def parts(path, data, size, first=1):
+    """A NUP file too large for a FAT32 card, as such a card has it: in parts, "<path>.001", ".002", ..., each `size` bytes
+    but the last. Numbered from `first`. The files' names, in order."""
+    names = []
+    for k, at in enumerate(range(0, len(data), size)):
+        name = f'{path}.{k + first:03d}'
+        open(name, 'wb').write(data[at:at + size])
+        names.append(name)
+    return names
 
 
 def main():
@@ -147,7 +161,22 @@ def main():
         open(os.path.join(folder, slot, 'progress.bin'), 'wb').write(slot.encode() * 4000)
         open(os.path.join(folder, slot, 'profile', 'settings.bin'), 'wb').write(b'pretend' * 100)
     open(os.path.join(folder, 'game.cfg'), 'w', newline='\n').write('save=second run\n')
-    print(f'{len(GAMES)} pretend games in {games}')
+    # games too large for a FAT32 card, in parts (docs/layout.md), in a folder of their own so that the shelf of the games
+    # folder stays as the previews walk through it. The parts are 1000 bytes: none begins or ends where anything of the
+    # container does, so the menu reads the name and icon across them. One has its last part still on its way from a computer.
+    # One is numbered from 0, as nx2-relink numbers its own files' parts.
+    in_parts = os.path.join(card, 'nx2-flow', 'parts')
+    os.makedirs(in_parts, exist_ok=True)
+    for k, (title_id, title) in enumerate(((0x0400F00000081000, 'Pretend Game Eight'), (0x0400F00000091000, 'Pretend Game Nine'),
+                                           (0x0400F000000A1000, 'Pretend Game Ten'))):
+        facts = {FACT_NPDM: b'META' + b'\0' * 0x7C, FACT_ICON: jpeg(picture(7 + k, (256, 256))), FACT_TITLE: title.encode('utf-8'),
+                 FACT_PUBLISHER: b'Driftwood Works'}
+        data = nup([(title_id, 0x10000 if k == 2 else 0, 0, facts)])
+        name = os.path.join(in_parts, f'{title} [{title_id:016X}].nup')
+        written = parts(name, data, 1000, first=0 if k == 2 else 1)
+        if k == 1:  # (its last part, still on its way from a computer)
+            os.rename(written[-1], written[-1] + '.ttpart')
+    print(f'{len(GAMES)} pretend games in {games}, and 3 in parts in {in_parts}')
 
 
 if __name__ == '__main__':

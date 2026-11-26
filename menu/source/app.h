@@ -14,7 +14,7 @@
 
 namespace Flow {
 
-inline constexpr const char* kVersion = "0.2.2";
+inline constexpr const char* kVersion = "0.2.2-parts.1";
 
 /// What was pressed since the last frame (a direction held repeats: the caller sees to it).
 struct Input {
@@ -130,6 +130,7 @@ private:
     int transfer_block_kb{1024};
     int transfer_queue{8};
     int transfer_rcvbuf_kb{256};
+    int transfer_part_mb{4095}; // How large the parts are in which a NUP file too large for the card is received.
     bool settings_changed{};
 
     // The shelf.

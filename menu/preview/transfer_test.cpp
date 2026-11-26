@@ -3,9 +3,12 @@
 // The menu's file receiver (source/transfer.cpp) on a PC, with a folder for a card: to try it
 // against the program that sends, with no console.
 //
-//   transfer_test <card folder> <seconds to run> [block KB] [queue] [KB a second] [socket buffer KB]
+//   transfer_test <card folder> <seconds to run> [block KB] [queue] [KB a second] [socket buffer KB] [part MB] [most one file]
 //
-// It prints what the Transfer screen would list. The sender is then pointed at 127.0.0.1.
+// It prints what the Transfer screen would list. The sender is then pointed at 127.0.0.1. The last
+// two say how a NUP file too large for the card is taken in parts, and the most one file may hold:
+// given, a file larger than that is taken in parts without the card being asked first, as a FAT32
+// card would have it (tools/test_transfer_parts.py does so).
 
 #include <chrono>
 #include <cstdio>
@@ -17,7 +20,7 @@
 
 int main(int argc, char** argv) {
     if (argc < 3) {
-        std::printf("transfer_test <card folder> <seconds> [block KB] [queue] [KB a second] [socket buffer KB]\n");
+        std::printf("transfer_test <card folder> <seconds to run> [block KB] [queue] [KB a second] [socket buffer KB] [part MB] [most one file]\n");
         return 1;
     }
     Flow::SetCardRoot(argv[1]);
@@ -34,6 +37,12 @@ int main(int argc, char** argv) {
     }
     if (argc > 6) {
         tuning.rcvbuf_kb = std::atoi(argv[6]);
+    }
+    if (argc > 7) {
+        tuning.part_mb = std::atoi(argv[7]);
+    }
+    if (argc > 8) {
+        tuning.most_one_file = std::strtoull(argv[8], nullptr, 10);
     }
     Transfer::Start(tuning);
     std::string last;

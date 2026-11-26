@@ -324,12 +324,33 @@ int main(int argc, char** argv) {
     run.Shot("44-transfer-light");
     run.Press(Key('b'));
 
+    // games too large for a FAT32 card, in parts: the folder nx2-flow/parts of the pretend card, picked as the games folder
+    run.Press(Key('-'));
+    run.Press(Key('U'), 8, 20);
+    run.Press(Key('a'), 30); // the picker, at the games folder
+    run.Press(Key('b'));     // up, to nx2-flow: "parts" comes after "games"
+    run.Press(Key('D'));
+    run.Press(Key('a'), 30); // into it
+    run.Shot("45-parts-picker"); // three games here, each counted once, whatever number of files it is in
+    run.Press(Key('x'), 30); // the folder in use
+    run.Press(Key('b'));
+    run.Shot("46-parts-shelf");
+    run.Press(Key('y')); // the options of the game that is in three parts: its file says so
+    run.Shot("47-parts-options");
+    run.Press(Key('b'));
+    run.Press(Key('R'), 60); // the one whose last part is still on its way
+    run.Press(Key('x'));
+    run.Shot("48-parts-incomplete"); // the back of its case says why it can't be started
+    run.Press(Key('a'), 30);
+    run.Shot("49-parts-cant-start");
+    run.Wait();
+
     // a card with no games
     Flow::SetCardRoot(std::string{argv[1]} + "/empty");
     Run none;
     none.out = argv[2];
     none.app.Start();
     none.Press({}, 30);
-    none.Shot("45-no-games");
+    none.Shot("50-no-games");
     return 0;
 }

@@ -15,7 +15,7 @@ $(error "Please set DEVKITPRO in your environment. export DEVKITPRO=<path to>/de
 endif
 
 TARGET   := nx2-flow
-VERSION  := 0.2.2
+VERSION  := 0.2.2-parts.1
 OUT      := out
 SOURCES  := app covers images library nup transfer main_switch
 HEADERS  := $(wildcard source/*.h)
@@ -37,7 +37,7 @@ OBJECTS  := $(foreach s,$(SOURCES),$(OUT)/$(s).o)
 HOSTCXX  ?= g++
 PYTHON   ?= python
 
-.PHONY: all clean preview nettest font
+.PHONY: all clean preview nettest partstest font
 all: $(OUT)/$(TARGET).nro
 
 $(OUT):
@@ -68,9 +68,23 @@ preview: $(OUT)/preview/preview$(EXE)
 	$(PYTHON) tools/ppm_to_png.py $(OUT)/preview
 
 # The file receiver itself, as it runs on the console, with a folder for a card.
-nettest:
+$(OUT)/preview/transfer_test$(EXE): preview/transfer_test.cpp source/transfer.cpp source/library.cpp source/nup.cpp source/images.cpp $(HEADERS)
 	mkdir -p $(OUT)/preview
-	$(HOSTCXX) -std=gnu++20 -O2 -Wall -Isource preview/transfer_test.cpp source/transfer.cpp source/library.cpp source/nup.cpp source/images.cpp -o $(OUT)/preview/transfer_test$(EXE)
+	$(HOSTCXX) -std=gnu++20 -O2 -Wall -Isource preview/transfer_test.cpp source/transfer.cpp source/library.cpp source/nup.cpp source/images.cpp -o $@
+
+nettest: $(OUT)/preview/transfer_test$(EXE)
+
+# A NUP file in parts on the shelf, read as one game, and a set that isn't whole: tried against a pretend card of the
+# program's own making. Then the receiver, with a NUP file too large for one file of the card: sent in parts, read back,
+# hashed and deleted as one (tools/test_transfer_parts.py speaks to it as the program that sends does).
+$(OUT)/preview/parts_test$(EXE): preview/parts_test.cpp source/library.cpp source/nup.cpp source/images.cpp $(HEADERS)
+	mkdir -p $(OUT)/preview
+	$(HOSTCXX) -std=gnu++20 -O2 -Wall -Isource preview/parts_test.cpp source/library.cpp source/nup.cpp source/images.cpp -o $@
+
+partstest: $(OUT)/preview/parts_test$(EXE) $(OUT)/preview/transfer_test$(EXE)
+	rm -rf $(OUT)/preview/parts-card
+	$(OUT)/preview/parts_test$(EXE) $(OUT)/preview/parts-card
+	$(PYTHON) tools/test_transfer_parts.py $(OUT)/preview/transfer_test$(EXE) $(OUT)/preview/parts-card
 
 font:
 	$(PYTHON) tools/bake_font.py

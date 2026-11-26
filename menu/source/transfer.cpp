@@ -16,6 +16,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <mutex>
 #include <thread>
 
@@ -32,6 +33,7 @@
 
 #include "app.h"
 #include "library.h"
+#include "nup.h"
 
 namespace Transfer {
 namespace {
@@ -397,6 +399,236 @@ bool WriteAll(int file, const u8* data, std::size_t size) {
     return true;
 }
 
+// ----------------------------------------------------------------------------------- files in parts
+// A FAT32 card keeps no file of 4 GiB or more, and a game's NUP file is far larger. Whether the card can hold a file as one
+// is asked of it as the file is received, by reserving the file's size; when it can't, a NUP file is received in parts,
+// "<name>.nup.001", ".002", ..., each as long as the others but the last: as the tools that copy files onto such a card
+// split them, and as the game loader reads one (docs/layout.md). Each part is "<name>.nup.00N.ttpart" until every byte of the
+// file is on the card. A file in parts is sent, hashed and deleted as the one file it is.
+
+constexpr u64 kFatMost = 0xFFFFFFFFull; // the most one file of a FAT32 card holds: 4 GiB less one byte
+constexpr std::size_t kMostParts = 64;  // the most parts the game loader reads a NUP file in
+
+std::string Lower(std::string s) {
+    for (char& ch : s) {
+        if (ch >= 'A' && ch <= 'Z') {
+            ch = static_cast<char>(ch - 'A' + 'a');
+        }
+    }
+    return s;
+}
+bool SameName(const std::string& a, const std::string& b) {
+    return Lower(a) == Lower(b);
+}
+
+/// "<name>.001", "<name>.002", ...: numbered from 1, three digits wide unless there are more parts than those hold.
+std::vector<std::string> PartNames(std::string name, std::size_t count) {
+    int width = 3;
+    for (std::size_t n = count; n >= 10; n /= 10) {
+        ++width;
+    }
+    std::vector<std::string> names;
+    for (std::size_t k = 0; k < count; ++k) {
+        const std::string digits = std::to_string(k + 1);
+        names.push_back(name + "." + std::string(static_cast<std::size_t>(width) - digits.size(), '0') + digits);
+    }
+    return names;
+}
+
+/// Whether a NUP file of `size` bytes, come in parts, would be read by the game loader: it must be a NUP file, in not more
+/// parts than it reads.
+bool InParts(const std::string& path, u64 size) {
+    return Nup::Named(path.substr(path.rfind('/') + 1)) == Nup::Name::One && (size - 1) / (static_cast<u64>(g_tuning.part_mb) << 20) < kMostParts;
+}
+
+/// A file being received in parts. A part is a file of its own while it is written, given its whole size before its first
+/// byte, as any file received is.
+class Split {
+public:
+    Split(std::string path, u64 size, u64 part)
+        : path_(std::move(path)), size_(size), part_(part), names_(PartNames(path_, static_cast<std::size_t>((size_ - 1) / part_ + 1))) {}
+
+    /// Whether the card has room for the whole file, and the first part made. False, with `error`, when not.
+    bool Begin(int& error) {
+        struct statvfs info {};
+        error = 0;
+        if (statvfs(Flow::OnCard("/").c_str(), &info) == 0 && static_cast<u64>(info.f_bavail) * info.f_frsize < size_) {
+            error = ENOSPC;
+            return false;
+        }
+        return Next(error);
+    }
+    /// The file's next bytes, each into the part that holds it. False, with `error`, when the card didn't take them.
+    bool Write(const u8* data, std::size_t size, int& error) {
+        while (size) {
+            const std::size_t take = static_cast<std::size_t>(std::min<u64>(size, Held() - in_));
+            if (!WriteAll(file_, data, take)) {
+                error = errno != 0 ? errno : EIO;
+                return false;
+            }
+            data += take, size -= take, in_ += take, written_ += take;
+            if (in_ == Held()) { // (the part is full: the next one begun, when more of the file is coming)
+                parts_done_++;
+                if (written_ < size_) {
+                    open_++, in_ = 0;
+                    if (!Next(error)) {
+                        return false;
+                    }
+                }
+            }
+        }
+        return true;
+    }
+    /// Ends the part being written: what close() says of it.
+    int End() {
+        const int result = file_ >= 0 ? close(file_) : 0;
+        file_ = -1;
+        return result;
+    }
+    bool Whole() const {
+        return written_ == size_;
+    }
+    std::size_t PartsDone() const {
+        return parts_done_;
+    }
+    std::size_t Count() const {
+        return names_.size();
+    }
+    const std::vector<std::string>& names() const {
+        return names_;
+    }
+    /// What the parts are called until the file is whole.
+    std::vector<std::string> Temps() const {
+        std::vector<std::string> temps;
+        for (const std::string& name : names_) {
+            temps.push_back(name + ".ttpart");
+        }
+        return temps;
+    }
+
+private:
+    u64 Held() const { // how many bytes the part being written holds
+        return open_ + 1 == names_.size() ? size_ - open_ * part_ : part_;
+    }
+    /// Makes the next part: its file opened, and given its size. False, with `error`, when the card won't.
+    bool Next(int& error) {
+        if (file_ >= 0) {
+            const int closed = close(file_);
+            file_ = -1;
+            if (closed != 0) {
+                error = errno != 0 ? errno : EIO;
+                return false;
+            }
+        }
+        const std::string temp = names_[open_] + ".ttpart";
+        file_ = open(temp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0666);
+        if (file_ < 0) {
+            error = errno;
+            return false;
+        }
+        if (ftruncate(file_, static_cast<off_t>(Held())) != 0) {
+            error = errno != 0 ? errno : EIO;
+            return false;
+        }
+        return true;
+    }
+    const std::string path_;
+    const u64 size_, part_;
+    const std::vector<std::string> names_;
+    int file_{-1};
+    std::size_t open_{};
+    u64 in_{}, written_{};
+    std::size_t parts_done_{};
+};
+
+/// A file the card keeps in parts, read as the one file it is.
+class Joined {
+public:
+    explicit Joined(const Nup::Kept& kept) : kept_(kept) {}
+    ~Joined() {
+        End();
+    }
+    Joined(const Joined&) = delete;
+    Joined& operator=(const Joined&) = delete;
+
+    /// Opens the first part. False, with `error`, when it can't be.
+    bool Begin() {
+        return Next();
+    }
+    /// Up to `size` bytes of the file from where it was read to, each from the part that holds it. Less than 0: a part is
+    /// missing or shorter than it was said to be, or can't be read. 0: the file is at its end.
+    ssize_t Read(void* to, std::size_t size) {
+        if (left_ == 0 && (at_ == kept_.parts.size() || !Next())) { // (the end of the file, or of a part: the next, when there is one)
+            return at_ == kept_.parts.size() && !error_ ? 0 : -1; // (0: the file's end. Less: a part couldn't be opened)
+        }
+        const ssize_t got = read(file_, to, static_cast<std::size_t>(std::min<u64>(size, left_)));
+        if (got > 0) {
+            left_ -= static_cast<u64>(got);
+        } else if (got == 0) {
+            error_ = EIO; // (a part shorter than it was said to be)
+        }
+        return got;
+    }
+    int End() {
+        const int result = file_ >= 0 ? close(file_) : 0;
+        file_ = -1;
+        return result;
+    }
+    int error() const {
+        return error_;
+    }
+    u64 size() const {
+        return kept_.size;
+    }
+
+private:
+    /// The part read to its end: the next one opened in its place. False when there is none left.
+    bool Next() {
+        End();
+        if (at_ == kept_.parts.size()) {
+            return false;
+        }
+        left_ = kept_.held[at_];
+        file_ = open(kept_.parts[at_++].c_str(), O_RDONLY);
+        if (file_ < 0) {
+            error_ = errno;
+            return false;
+        }
+        return true;
+    }
+    const Nup::Kept& kept_;
+    int file_{-1};
+    std::size_t at_{};
+    u64 left_{};
+    int error_{};
+};
+
+/// Removes what is on the card, beside `path`, of a container's name: parts other than `keep`, and parts still being
+/// received other than `temps`. Left from a copy of the file cut otherwise.
+void ForgetOtherParts(const std::string& path, const std::vector<std::string>& keep, const std::vector<std::string>& temps) {
+    const std::size_t slash = path.rfind('/');
+    const std::string folder = path.substr(0, slash + 1), name = path.substr(slash + 1);
+    DIR* dir = opendir(folder.c_str());
+    if (!dir) {
+        return;
+    }
+    while (const dirent* entry = readdir(dir)) {
+        const std::string found = entry->d_name;
+        // (a part: "Game.nup.003", or one still being received: "Game.nup.003.ttpart")
+        const bool receiving = found.size() > 7 && found.compare(found.size() - 7, 7, ".ttpart") == 0;
+        const std::string of_name = receiving ? found.substr(0, found.size() - 7) : found;
+        std::string of;
+        if (Nup::Named(of_name, &of) != Nup::Name::Part || !SameName(of, name)) {
+            continue;
+        }
+        if (std::find(keep.begin(), keep.end(), found) != keep.end() || std::find(temps.begin(), temps.end(), folder + found) != temps.end()) {
+            continue;
+        }
+        unlink((folder + found).c_str());
+    }
+    closedir(dir);
+}
+
 // ----------------------------------------------------------------------------------- commands
 
 bool DoPing(int fd) {
@@ -463,23 +695,45 @@ bool DoPut(int fd, const std::string& path, const std::string& shown) {
     }
     Flow::MakeFolders(FolderOf(shown));
     const std::string part = path + ".ttpart";
-    const int file = open(part.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0666);
-    if (file < 0) {
-        SendStatus(fd, errno, "create");
-        return false; // The data that follows cannot be told from a command: hang up.
-    }
-    // The whole size at once: a file that grows block by block is what makes a card slow.
+    // The whole size at once: a file that grows block by block is what makes a card slow. A NUP file the card can't hold as
+    // one comes in parts instead, each given its size as it begins (files in parts, above).
     const Clock::time_point reserve_started = Clock::now();
-    if (size > 0 && ftruncate(file, static_cast<off_t>(size)) != 0) {
-        const int error = errno;
-        close(file);
-        unlink(part.c_str());
-        SendStatus(fd, error, "reserve space");
-        return false;
+    std::unique_ptr<Split> split;
+    int file = -1, refused = 0;
+    if (g_tuning.most_one_file && size > g_tuning.most_one_file) {
+        refused = EFBIG; // (said by the tuning: the card isn't asked)
+    } else {
+        file = open(part.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0666);
+        if (file < 0) {
+            SendStatus(fd, errno, "create");
+            return false; // The data that follows cannot be told from a command: hang up.
+        }
+        if (size > 0 && ftruncate(file, static_cast<off_t>(size)) != 0) {
+            refused = errno;
+            close(file), unlink(part.c_str());
+            file = -1;
+        }
+    }
+    if (refused) {
+        const u64 most = g_tuning.most_one_file ? g_tuning.most_one_file : kFatMost;
+        split.reset(size > most && InParts(path, size) ? new Split(path, size, static_cast<u64>(g_tuning.part_mb) << 20) : nullptr);
+        if (split && !split->Begin(refused)) {
+            split.reset();
+        }
+        if (!split) {
+            SendStatus(fd, refused, "reserve space");
+            return false;
+        }
     }
     if (!SendStatus(fd, 0)) {
-        close(file);
-        unlink(part.c_str());
+        if (split) {
+            for (const std::string& temp : split->Temps()) {
+                unlink(temp.c_str());
+            }
+        } else {
+            close(file);
+            unlink(part.c_str());
+        }
         return false;
     }
 
@@ -497,6 +751,7 @@ bool DoPut(int fd, const std::string& path, const std::string& shown) {
     } timing;
     std::thread writer{[&] {
         Block block;
+        std::size_t said = 0; // (the parts said of as they were completed)
         Clock::time_point last_written = started;
         for (;;) {
             const Clock::time_point t0 = Clock::now();
@@ -506,10 +761,19 @@ bool DoPut(int fd, const std::string& path, const std::string& shown) {
             const Clock::time_point t1 = Clock::now();
             crc = Crc(crc, block.data, block.size);
             const Clock::time_point t2 = Clock::now();
-            if (!WriteAll(file, block.data, block.size)) {
-                write_error = errno != 0 ? errno : EIO;
+            if (split ? !split->Write(block.data, block.size, write_error) : !WriteAll(file, block.data, block.size)) {
+                if (write_error == 0) {
+                    write_error = errno != 0 ? errno : EIO;
+                }
                 g_pipe.Abort();
                 return;
+            }
+            if (split && split->PartsDone() > said) {
+                // (a part on the card: said of each but the last, which the line at the end tells of)
+                said = split->PartsDone();
+                if (said < split->Count()) {
+                    Say("%s: part %d of %d on the card", shown.c_str(), static_cast<int>(said), static_cast<int>(split->Count()));
+                }
             }
             const Clock::time_point t3 = Clock::now();
             const double took = Seconds(t3 - t2), gap = Seconds(t3 - last_written);
@@ -584,14 +848,20 @@ bool DoPut(int fd, const std::string& path, const std::string& shown) {
     writer.join();
     const bool failed = !network_ok || write_error != 0 || g_pipe.Aborted();
     const Clock::time_point close_started = Clock::now();
-    if (close(file) != 0 && write_error == 0 && !failed) {
+    if ((split ? split->End() : close(file)) != 0 && write_error == 0 && !failed) {
         write_error = errno != 0 ? errno : EIO;
     }
     const double close_s = Seconds(Clock::now() - close_started);
     g_busy = false;
 
     if (failed || write_error != 0) {
-        unlink(part.c_str());
+        if (split) {
+            for (const std::string& temp : split->Temps()) {
+                unlink(temp.c_str());
+            }
+        } else {
+            unlink(part.c_str());
+        }
         if (write_error != 0) {
             Log("PUT %s: write failed (%s)", shown.c_str(), std::strerror(write_error));
             SendStatus(fd, write_error, "write");
@@ -600,22 +870,47 @@ bool DoPut(int fd, const std::string& path, const std::string& shown) {
         }
         return false;
     }
-    unlink(path.c_str());
-    if (rename(part.c_str(), path.c_str()) != 0) {
-        const int error = errno;
-        unlink(part.c_str());
-        Log("PUT %s: rename failed (%s)", shown.c_str(), std::strerror(error));
-        return SendStatus(fd, error, "rename");
+    if (split) {
+        // (what was there of this file from before goes: the file as one, and parts other than these. Then the parts are given
+        // their names, all of them: until the last is, none of them is a game's)
+        unlink(path.c_str());
+        const std::vector<std::string> temps = split->Temps();
+        ForgetOtherParts(path, split->names(), temps);
+        std::size_t k = 0;
+        for (; k < temps.size(); ++k) {
+            unlink(split->names()[k].c_str());
+            if (rename(temps[k].c_str(), split->names()[k].c_str()) != 0) {
+                break;
+            }
+        }
+        if (k != temps.size()) {
+            const int error = errno;
+            for (std::size_t n = 0; n < temps.size(); ++n) {
+                unlink(n < k ? split->names()[n].c_str() : temps[n].c_str());
+            }
+            Log("PUT %s: rename failed (%s)", shown.c_str(), std::strerror(error));
+            return SendStatus(fd, error, "rename");
+        }
+    } else {
+        unlink(path.c_str());
+        if (rename(part.c_str(), path.c_str()) != 0) {
+            const int error = errno;
+            unlink(part.c_str());
+            Log("PUT %s: rename failed (%s)", shown.c_str(), std::strerror(error));
+            return SendStatus(fd, error, "rename");
+        }
     }
     const double seconds = Seconds(Clock::now() - started);
     const double mib = size / 1048576.0;
     const double mbps = seconds > 0 ? mib / seconds : 0;
+    // (how the card keeps it, when not as one file)
+    const std::string how = split ? " in " + std::to_string(split->Count()) + " parts of " + std::to_string(g_tuning.part_mb) + " MB" : std::string{};
     if (size >= 8u * 1024 * 1024) {
         // The lines to tune by: the short one on the screen, the whole of it in the file.
-        Say("PUT %s: %.1f MiB in %.1f s, %.1f MB/s; longest pause %.2f s; queue at most %d of %d", shown.c_str(), mib, seconds, mbps,
+        Say("PUT %s%s: %.1f MiB in %.1f s, %.1f MB/s; longest pause %.2f s; queue at most %d of %d", shown.c_str(), how.c_str(), mib, seconds, mbps,
             timing.longest_gap_s, g_pipe.Most(), g_pipe.Count());
-        Note("PUT %s: %.1f MiB in %.1f s, %.1f MB/s; longest time with nothing written %.2f s (at %.1f s); queue at most %d of %d",
-             shown.c_str(), mib, seconds, mbps, timing.longest_gap_s, timing.gap_at_s, g_pipe.Most(), g_pipe.Count());
+        Note("PUT %s%s: %.1f MiB in %.1f s, %.1f MB/s; longest time with nothing written %.2f s (at %.1f s); queue at most %d of %d",
+             shown.c_str(), how.c_str(), mib, seconds, mbps, timing.longest_gap_s, timing.gap_at_s, g_pipe.Most(), g_pipe.Count());
         Note("  blocks of %d KB: %u writes, slowest %.0f ms, 100 ms or more: %u, 500 ms or more: %u, 2 s or more: %u; writing %.1f s (%.1f MB/s "
              "while writing), waiting for the network %.1f s",
              static_cast<int>(g_block / 1024), timing.blocks, timing.slowest_s * 1000, timing.over_100ms, timing.over_500ms, timing.over_2s,
@@ -631,22 +926,39 @@ bool DoPut(int fd, const std::string& path, const std::string& shown) {
     return SendStatus(fd, 0) && SendU32(fd, crc);
 }
 
-/// Card -> computer. A thread reads the card into blocks; this one sends them.
+/// Card -> computer. A thread reads the card into blocks; this one sends them. A file the card keeps in parts is sent as
+/// the one file it is.
 bool DoGet(int fd, const std::string& path, const std::string& shown, bool send_data) {
     struct stat info {};
-    if (stat(path.c_str(), &info) != 0) {
-        return SendStatus(fd, errno, "stat");
-    }
-    if (S_ISDIR(info.st_mode)) {
+    const int stat_error = stat(path.c_str(), &info) != 0 ? errno : 0;
+    Nup::Kept kept; // (the parts of the file, when the card keeps it in parts: referred to for as long as it is read)
+    std::unique_ptr<Joined> joined;
+    if (stat_error) {
+        // (no file there of that name: the parts of one, then)
+        if (!Nup::Locate(path, kept)) {
+            return SendStatus(fd, stat_error, "stat");
+        }
+        if (!kept.whole) {
+            return SendError(fd, ("its parts aren't a whole file on the card: " + kept.error).c_str());
+        }
+        joined.reset(new Joined(kept));
+        if (!joined->Begin()) {
+            return SendStatus(fd, joined->error(), "open");
+        }
+    } else if (S_ISDIR(info.st_mode)) {
         return SendError(fd, "is a folder");
     }
-    const int file = open(path.c_str(), O_RDONLY);
-    if (file < 0) {
+    const int file = joined ? -1 : open(path.c_str(), O_RDONLY);
+    if (!joined && file < 0) {
         return SendStatus(fd, errno, "open");
     }
-    const u64 size = static_cast<u64>(info.st_size);
+    const u64 size = joined ? joined->size() : static_cast<u64>(info.st_size);
     if (!SendStatus(fd, 0) || !SendU64(fd, size)) {
-        close(file);
+        if (joined) {
+            joined->End();
+        } else {
+            close(file);
+        }
         return false;
     }
     SetCurrent(send_data ? "Sending" : "Checking", shown, size);
@@ -664,7 +976,7 @@ bool DoGet(int fd, const std::string& path, const std::string& shown, bool send_
             const std::size_t want = static_cast<std::size_t>(std::min<u64>(left, g_block));
             std::size_t have = 0;
             while (have < want) {
-                const ssize_t got = read(file, block + have, want - have);
+                const ssize_t got = joined ? joined->Read(block + have, want - have) : read(file, block + have, want - have);
                 if (got <= 0) {
                     read_ok = false;
                     g_pipe.Abort();
@@ -690,7 +1002,11 @@ bool DoGet(int fd, const std::string& path, const std::string& shown, bool send_
         g_pipe.Release(block.data);
     }
     reader.join();
-    close(file);
+    if (joined) {
+        joined->End();
+    } else {
+        close(file);
+    }
     g_busy = false;
     if (!network_ok || !read_ok) {
         Log("%s %s: %s", send_data ? "GET" : "HASH", shown.c_str(), read_ok ? "connection lost" : "read failed");
@@ -711,7 +1027,19 @@ bool DoDelete(int fd, const std::string& path, const std::string& shown) {
     }
     struct stat info {};
     if (stat(path.c_str(), &info) != 0) {
-        return SendStatus(fd, errno, "stat");
+        // (no file there of that name: the parts of one, then, which together are the file)
+        const int stat_error = errno;
+        Nup::Kept kept;
+        if (!Nup::Locate(path, kept)) {
+            return SendStatus(fd, stat_error, "stat");
+        }
+        for (const std::string& part : kept.parts) {
+            if (unlink(part.c_str()) != 0) {
+                return SendStatus(fd, errno, "delete");
+            }
+        }
+        Say("DELETE %s (%u parts)", shown.c_str(), static_cast<unsigned>(kept.parts.size()));
+        return SendStatus(fd, 0);
     }
     const int result = S_ISDIR(info.st_mode) ? rmdir(path.c_str()) : unlink(path.c_str());
     if (result != 0) {
@@ -882,6 +1210,7 @@ void Start(const Tuning& tuning) {
     g_tuning.queue = std::clamp(g_tuning.queue, 2, 64);
     g_tuning.kbps = std::max(0, g_tuning.kbps);
     g_tuning.rcvbuf_kb = std::clamp(g_tuning.rcvbuf_kb, 64, 2048);
+    g_tuning.part_mb = std::clamp(g_tuning.part_mb, 1, 4095);
     g_block = static_cast<std::size_t>(g_tuning.block_kb) * 1024;
     CrcInit();
     {

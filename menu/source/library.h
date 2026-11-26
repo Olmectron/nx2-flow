@@ -43,10 +43,11 @@ Settings ReadSettings(const std::string& card_path);
 bool WriteSettings(const std::string& card_path, const Settings& values);
 
 struct Game {
-    std::string path;      // The container, as a path of the card.
-    std::string file;      // Its name alone.
+    std::string path;      // The container, as a path of the card: its one name, whether it is one file or in parts.
+    std::string file;      // Its name alone, as one file: "Game.nup".
     std::uint64_t size{};
     std::int64_t mtime{};
+    int parts{};          // The files the container is in on the card: one, or the parts of a file too large for a FAT32 card.
     std::uint64_t title_id{};
     std::string id;        // The title id, 16 hex digits, lower case: the game's folder's name.
     std::string title;
@@ -65,9 +66,10 @@ struct Game {
     }
 };
 
-/// The games of a folder, by title. What was read of each container is kept in a small file
-/// under kCache, by the container's name, size and time: a library opens without reading the
-/// containers again.
+/// The games of a folder, by title. A container is one file ("Game.nup") or, when too large for
+/// a FAT32 card, in parts ("Game.nup.001", ".002", ...), which are one game here. What was read of
+/// each container is kept in a small file under kCache, by the container's name, size and time: a
+/// library opens without reading the containers again.
 std::vector<Game> ScanGames(const std::string& games_folder);
 
 /// Decodes a game's icon if it hasn't been yet (from kCache/<id>.jpg). At most `budget` a call.
