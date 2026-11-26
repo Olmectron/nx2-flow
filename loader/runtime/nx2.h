@@ -35,7 +35,7 @@ extern char nx2_game_id[17];           // the title id, 16 hex digits
 const char *nx2_home(void);            // "/nx2-flow/<title id>", as the file system service is given it
 const char *nx2_file(const char *name);  // "sdmc:/nx2-flow/<title id>/<name>": good until eight more have been asked for
 #define NX2_F(name) nx2_file(name)
-extern u32 nx2_game_mb, nx2_game_room_mb, nx2_game_apart_mb, nx2_game_remote_mb, nx2_game_sysres_kb;
+extern u32 nx2_game_mb, nx2_game_room_mb, nx2_game_apart_mb, nx2_game_fixed_mb, nx2_game_auto_heaps, nx2_game_remote_mb, nx2_game_sysres_kb;
 int nx2_game_open(const char *nup_path);  // 0: the game's NUP file was read and its modules are in memory
 extern u8 *nx2_big_at;                    // the stretch of the program's memory kept for the loader's large pieces (game.c)
 extern u64 nx2_big_size;

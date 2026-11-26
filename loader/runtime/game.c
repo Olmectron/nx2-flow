@@ -32,7 +32,7 @@ char nx2_game_id[17] = "unknown";
 // (What the game is told of memory, as a port is built: with no figure given and nothing kept apart, what there really is less
 // 400 MB, 8192 at most; the console's 8992 for a game whose table of heaps keeps a stretch apart; game.cfg's figure otherwise.
 // tools/build.py and main.c have the story.)
-u32 nx2_game_mb = 8192, nx2_game_room_mb = 400, nx2_game_apart_mb, nx2_game_remote_mb, nx2_game_sysres_kb;
+u32 nx2_game_mb = 8192, nx2_game_room_mb = 400, nx2_game_apart_mb, nx2_game_fixed_mb, nx2_game_auto_heaps, nx2_game_remote_mb, nx2_game_sysres_kb;
 Nx2Module nx2_modules[MODULES];
 Nx2Image nx2_images[MODULES];
 unsigned nx2_module_count;
@@ -1116,6 +1116,56 @@ static u32 byml_get(const u8 *b, u64 size, u64 map, const char *key, u32 *value)
     }
     return 0;
 }
+// (a BYML integer entry decoded to signed KB: 1 if an integer type, 0 otherwise)
+static int byml_size_kb(const u8 *b, u64 size, u32 kind, u32 v, s64 *out) {
+    if (kind == 0xD1) {
+        *out = (s32)v;
+        return 1;
+    }
+    if (kind == 0xD3) {
+        *out = (s64)(u64)v;
+        return 1;
+    }
+    if (kind == 0xD4 && (u64)v + 8 <= size) {
+        *out = (s64)r64(b + v);
+        return 1;
+    }
+    if (kind == 0xD5 && (u64)v + 8 <= size) {
+        const u64 raw = r64(b + v);
+        if (raw > (u64)INT64_MAX) return 0;
+        *out = (s64)raw;
+        return 1;
+    }
+    return 0;
+}
+// (walk a HeapDef.byml Heaps map once: VirtualAddressMemory Size in KB, sum of top-level fixed heaps, and count of non-Reserved auto-sized top-level heaps)
+static void byml_scan_heaps(const u8 *b, u64 size, u64 map, u64 *vam_kb, u64 *fixed_kb, u32 *auto_heaps) {
+    const u64 keys = r32(b + 4);
+    if (map + 4 > size || b[map] != 0xC1 || keys + 4 > size || b[keys] != 0xC2) return;
+    const u32 n = r32(b + map) >> 8, nkeys = r32(b + keys) >> 8;
+    for (u32 k = 0; k < n && map + 12 + 8ull * k <= size; k++) {
+        const u32 w = r32(b + map + 4 + 8 * k), entry_kind = w >> 24, index = w & 0xFFFFFF;
+        if (entry_kind != 0xC1 || index >= nkeys || keys + 8 + 4ull * index > size) continue;
+        const u64 at = keys + r32(b + keys + 4 + 4 * index);
+        if (at >= size) continue;
+        const u32 entry_val = r32(b + map + 8 + 8 * k);
+        u32 sv = 0, pv = 0;
+        const u32 sk = byml_get(b, size, entry_val, "Size", &sv);
+        s64 sz_kb = 0;
+        if (!byml_size_kb(b, size, sk, sv, &sz_kb)) continue;
+        const int is_vam = (size - at > 20) && !memcmp(b + at, "VirtualAddressMemory", 21);
+        if (is_vam) {
+            if (sz_kb > 0) *vam_kb = (u64)sz_kb;
+        } else if (!byml_get(b, size, entry_val, "Parent", &pv)) {
+            if (sz_kb > 0 && (u64)sz_kb < (64ull << 20)) {
+                *fixed_kb += (u64)sz_kb;
+            } else if (sz_kb < 0) {
+                const int is_reserved = (size - at > 8) && !memcmp(b + at, "Reserved", 9);
+                if (!is_reserved) (*auto_heaps)++;
+            }
+        }
+    }
+}
 static void heaps_read(void) {
     // the table: of those in System/HeapSize, the Switch 2's own ("Ounce" in its name), and of those the game's as sold ("Product")
     const Rom *r = &roms[0];
@@ -1154,19 +1204,19 @@ static void heaps_read(void) {
     } else {
         byml = raw;
     }
-    u32 v = 0, kind = 0;
+    u32 v = 0, auto_heaps = 0;
+    u64 kb = 0, fixed_kb = 0;
     if (byml && size > 16 && byml[0] == 'Y' && byml[1] == 'B') {
         const u64 root = r32(byml + 12);
-        if (byml_get(byml, size, root, "Heaps", &v) == 0xC1 && byml_get(byml, size, v, "VirtualAddressMemory", &v) == 0xC1) kind = byml_get(byml, size, v, "Size", &v);
+        if (byml_get(byml, size, root, "Heaps", &v) == 0xC1) byml_scan_heaps(byml, size, v, &kb, &fixed_kb, &auto_heaps);
     }
-    u64 kb = 0;
-    if (kind == 0xD1 || kind == 0xD3) kb = v;
-    else if ((kind == 0xD4 || kind == 0xD5) && (u64)v + 8 <= size) kb = r64(byml + v);
     if (!byml) nx2_log("[game] the game's table of heaps (%u KB) couldn't be unpacked: it is told of memory as a game that has none\n", table->size >> 10);
     else if (kb >= 1024 && kb < (16ull << 20)) {
         nx2_game_apart_mb = (u32)(kb >> 10), nx2_game_mb = 8992, nx2_game_room_mb = 64;
-        nx2_log("[game] the game's own table of heaps keeps %u MB of address space apart from its heap: it is told of the console's 8992 MB, as on its console\n",
-                (u64)nx2_game_apart_mb);
+        if (fixed_kb > 0 && fixed_kb < (16ull << 20)) nx2_game_fixed_mb = (u32)((fixed_kb + 1023) >> 10);
+        nx2_game_auto_heaps = auto_heaps;
+        nx2_log("[game] the game's own table of heaps keeps %u MB of address space apart from its heap (%u MB fixed, %u auto): it is told of the console's 8992 MB, as on its console\n",
+                (u64)nx2_game_apart_mb, (u64)nx2_game_fixed_mb, (u64)nx2_game_auto_heaps);
     } else
         nx2_log("[game] the game's own table of heaps keeps no address space apart from its heap\n");
     nx2_big_free(byml);
@@ -1251,7 +1301,16 @@ u64 nx2_game_room_end(void) {
     // game than the 384 MB there were before did.)
     u64 cache = 4u << 20;
     if (packed) {
-        cache = unpacked_room > largest + (64u << 20) ? unpacked_room : largest + (64u << 20);
+        if (nx2_game_apart_mb >= 1024) {
+            // A game that maps 1 GB+ of physical memory as it runs needs spare MB returned to the kernel, while keeping enough
+            // unpack room (144 MB floor instead of the 192 MB default) to avoid zstd cache thrashing on multi-thousand-file NUPs.
+            u64 room = largest + (16u << 20);
+            if (room < (144u << 20)) room = 144u << 20;
+            if (room < unpacked_room) unpacked_room = room;
+            cache = room;
+        } else {
+            cache = unpacked_room > largest + (64u << 20) ? unpacked_room : largest + (64u << 20);
+        }
         if (cache > all) cache = all;
         cache += 16u << 20;
     }
@@ -1501,7 +1560,10 @@ int nx2_game_open(const char *path) {
         char memory[16];
         setting("memory", memory, sizeof memory);
         const u32 mb = (u32)strtoul(memory, NULL, 10);
-        if (mb >= 2048 && mb <= 8992) nx2_game_mb = mb, nx2_game_room_mb = 64, nx2_log("[game] game.cfg: the game is told of %u MB\n", (u64)mb);
+        if (mb >= 2048 && mb <= 8992) {
+            nx2_game_mb = mb, nx2_game_room_mb = 64, nx2_game_fixed_mb = 0;
+            nx2_log("[game] game.cfg: the game is told of %u MB\n", (u64)mb);
+        }
     }
     room_said("with the game's modules and the table of its files in it");
     read_test();

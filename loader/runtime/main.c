@@ -45,7 +45,13 @@ void __libnx_initheap(void) {
     {
         // (128 MB, where it was 256: what the port takes of its own heap while a game runs is a few MB, and its table of a mods
         // folder's files; the other half is the game's now, which a game that maps memory as it runs was short of)
+#ifdef NX2_LOADER
+        // (In loader mode, large module images, BSS, RomFS tables and unpacked files live in nx2_big_at; 96 MB for mimalloc still
+        // leaves ample room for libounce while returning 32 MB of physical RAM to the game's kernel pool.)
+        u64 host = 96ull << 20;
+#else
         u64 host = 128ull << 20;
+#endif
         // (with the modules kept whole, whole.c, each one's image and bss are put together in the host's heap before the loader
         // service maps them: that much more is the host's. A game's seven are 190 MB, and with 256 MB in all the sixth had
         // none; log, 2026-11-25.)
@@ -131,7 +137,7 @@ void __libnx_initheap(void) {
 #ifdef NX2_LOADER
     // (The game loader's room is not the allocator's to give: a game's modules and its unpacked files are large pieces, which
     // the library's allocator serves badly. The top of the host's part, as much as the room is, is game.c's own to give out.)
-    if (loader_room && size > loader_room + (96ull << 20)) {
+    if (loader_room && size > loader_room + (64ull << 20)) {
         nx2_big_size = loader_room & ~0xFFFull;
         nx2_big_at = (u8 *)(((u64)addr + size - nx2_big_size) & ~0xFFFull);
         size = (u64)(nx2_big_at - addr);
@@ -258,6 +264,18 @@ int main(int argc, char **argv) {
 #endif
             u64 most = (u64)NX2_GAME_MB << 20;
             if (heap_given + apart < most + slack) most = heap_given + apart > slack ? (heap_given + apart - slack) & ~0x1FFFFFull : 0;
+#ifdef NX2_LOADER
+            // (A game that declares 1 GB+ of VirtualAddressMemory and has only fixed top-level heaps besides Reserved over-allocates
+            // SetHeapSize when told the full 8992 MB while the host takes ~450-550 MB from the kernel pool, starving MapPhysicalMemory
+            // (nx2-relink#28, Switch Sports Resort: 7149 MB fixed + 1500 MB VAM). Trim `most` to max(fixed + 128 MB + apart,
+            // heap_given - slack) so SetHeapSize keeps >= 128 MB headroom and returns the excess physical memory to MapPhysicalMemory.)
+            if (apart >= (1024ull << 20) && nx2_game_fixed_mb && !nx2_game_auto_heaps && heap_given < most) {
+                const u64 min_most = (((u64)nx2_game_fixed_mb + 128) << 20) + apart;
+                const u64 want_most = heap_given > slack ? heap_given - slack : 0;
+                const u64 fit = ((min_most > want_most ? min_most : want_most) + 0x1FFFFFull) & ~0x1FFFFFull;
+                if (fit < most) most = fit;
+            }
+#endif
             {  // (<folder>/told: the game is told of this many MB, whatever there is. A try, for a game that sizes itself by it.)
                 FILE *t = fopen(NX2_F("told"), "rb");
                 if (t) {
