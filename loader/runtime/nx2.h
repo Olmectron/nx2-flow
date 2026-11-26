@@ -47,6 +47,10 @@ int nx2_merge_plan(const char *wish);     // merge.c: the modules that needn't b
 int nx2_merge_map(void *ro_service);      // ... and that image mapped by the loader service, after the modules kept whole
 u64 nx2_game_rom_size(void);               // the game's files as one image, made from the NUP's (and a mods folder's) as it is read
 u32 nx2_game_rom_read(u64 offset, u8 *to, u64 size, u64 *got);
+u32 nx2_game_aoc_count(void);              // its add-on content (kind 2 packages of the NUP file), each an image of its own
+u32 nx2_game_aoc_index(u32 which);
+u64 nx2_game_aoc_size(u32 which);
+u32 nx2_game_aoc_read(u32 which, u64 offset, u8 *to, u64 size, u64 *got);
 #else
 #define NX2_HOME "/" NX2_TOOL "/" NX2_NAME  // (as the file system service is given it)
 #define NX2_DIR "sdmc:" NX2_HOME "/"

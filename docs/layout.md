@@ -56,6 +56,7 @@ Written by the menu, read by the loader. A key that is absent or empty means the
 | `memory` | MB the game is told of (2048 to 8992). **Advanced** | decided by the loader |
 | `room` | MB the loader keeps for itself while it opens the game (128 to 2048); what the game turns out not to need of it is given back to the game. **Advanced** | 1024 |
 | `modules` | `whole`: no module is merged with another; `merge`: all that may be are. **Advanced**, by hand: the menu has no row for it | merged only when the game needs the places |
+| `dlc` | `off`: the add-on content the NUP file holds is not given to the game. By hand: the menu has no row for it | given |
 
 The advanced ones are shown behind a warning: a wrong value keeps a game from starting. Removing the key puts it right again.
 The detailed log is not a key: it is the file `debug` in the game's folder.

@@ -11,7 +11,8 @@ card and how the two programs talk.
 ## What it does when it starts
 
 1. Reads the NUP file's table of contents and takes the packages that make the game: the game's own and its updates, the later
-   over the earlier. Added content isn't taken yet.
+   over the earlier. Its add-on content, where the NUP file holds any, is given to the game as the console would give it:
+   each as an image of its own, made in memory as the game's is (`dlc=off` in the game's `game.cfg` leaves it out).
 2. Unpacks the modules of the newest program (LZ4 or ZBIC) into memory and has the console's loader service map them, code and
    data together as on the console. That service maps seven images for a program besides its own: when a game has more
    modules than that, or loads modules of its own as it runs, the ones that needn't be whole are made into one image first

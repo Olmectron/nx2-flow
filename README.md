@@ -101,6 +101,8 @@ The menu's Transfer screen takes the file from a computer; `menu/README.md` has 
 - **Not every game runs.** The console's loader service maps seven modules for one program. A game with more, or one that
   loads modules of its own as it runs, has the ones that allow it made into one by the loader; a game that still doesn't fit
   needs a port made for it with nx2-relink.
+- **Updates and add-on content.** A NUP file that holds the game with its update and its add-on content is read as one: the
+  update is laid over the game, and the add-on content is given to the game as the console would give it.
 - **Mods.** A file put in the game's folder under `mods/`, at the path it has inside the game, is what the game gets in place of
   its own. More sets go in `modsets/<name>/`; the menu picks which is in use.
 - **Slots of saved data.** Each slot is a folder of the game's own saved data; the menu makes, copies and picks them.
