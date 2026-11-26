@@ -23,9 +23,10 @@ constexpr int kRowGap = 8;
 constexpr int kPickerRows = 8;
 constexpr int kSettingsVisible = 7;
 constexpr int kSavesVisible = 6;
+constexpr int kLogVisible = 21;
 
 // The rows of a game's options, of the settings.
-enum SheetRow { kSheetLog, kSheetMods, kSheetSaves, kSheetAdvanced };
+enum SheetRow { kSheetLog, kSheetMods, kSheetSaves, kSheetAdvanced, kSheetViewLog };
 enum AdvancedRow { kAdvancedMemory, kAdvancedRoom };
 enum SettingRow { kSetFolder, kSetShelf, kSetCovers, kSetCases, kSetTheme, kSetDownload, kSetTransfer, kSetCap, kSetRescan };
 
@@ -97,6 +98,56 @@ void Dim(Canvas& c) {
     c.FillRect(0, 0, c.Width(), c.Height(), g_theme_light ? MakeColor(0xF2, 0xF2, 0xF2, 0xC8) : MakeColor(0x10, 0x11, 0x13, 0xC8));
 }
 
+/// Wraps pre-sanitized log lines to `max_w`, preserving blank lines and hard-breaking
+/// space-free tokens (paths, hex dumps, separator rules) on UTF-8 codepoint boundaries.
+std::vector<std::string> WrapLogLines(Font& font, const std::vector<std::string>& raw_lines, int size, int max_w) {
+    std::vector<std::string> out;
+    out.reserve(raw_lines.size());
+    for (const std::string& raw : raw_lines) {
+        if (raw.empty()) {
+            out.emplace_back();
+            continue;
+        }
+        if (font.Measure(raw, size) <= max_w) {
+            out.push_back(raw);
+            continue;
+        }
+        std::size_t pos = 0;
+        while (pos < raw.size()) {
+            std::size_t end = pos;
+            std::size_t last_space = std::string::npos;
+            while (end < raw.size()) {
+                std::size_t next = end + 1;
+                while (next < raw.size() && (static_cast<unsigned char>(raw[next]) & 0xC0) == 0x80) {
+                    ++next;
+                }
+                if (font.Measure(std::string_view(raw).substr(pos, next - pos), size) > max_w) {
+                    break;
+                }
+                if (raw[end] == ' ') {
+                    last_space = end;
+                }
+                end = next;
+            }
+            if (end == pos) {
+                // Ensure forward progress even if a single glyph exceeds max_w.
+                end = pos + 1;
+                while (end < raw.size() && (static_cast<unsigned char>(raw[end]) & 0xC0) == 0x80) {
+                    ++end;
+                }
+            } else if (end < raw.size() && last_space != std::string::npos && last_space > pos) {
+                end = last_space;
+            }
+            out.push_back(raw.substr(pos, end - pos));
+            pos = end;
+            if (pos < raw.size() && raw[pos] == ' ') {
+                ++pos;
+            }
+        }
+    }
+    return out;
+}
+
 } // namespace
 
 // ---------------------------------------------------------------------------------------------
@@ -104,6 +155,7 @@ void Dim(Canvas& c) {
 
 void App::Start() {
     font.InitLibrary();
+    host = Platform::QueryHost();
     LoadSettings();
     ApplyTheme(light);
     g_shelf_cases = cases;
@@ -245,6 +297,9 @@ Request App::Update(const Input& in, float dt) {
         break;
     case Mode::Transfer:
         UpdateTransfer(in, dt);
+        break;
+    case Mode::LogViewer:
+        UpdateLogViewer(in);
         break;
     }
     return {};
@@ -417,6 +472,16 @@ std::vector<App::Row> App::SheetRows() {
     }
     rows.push_back({"Advanced", advanced.empty() ? "Automatic" : advanced,
                     "The memory the game is told of and the room the loader keeps. They can keep a game from starting."});
+    const std::string folder = game->Folder();
+    const bool has_crash = Exists(folder + "/crash.txt");
+    const bool has_log = Exists(folder + "/log.txt");
+    if (has_crash || has_log) {
+        const std::string help = has_crash && has_log
+                                     ? "Shows the header and last lines of crash.txt right here, without pulling the card. X switches to log.txt inside."
+                                     : has_crash ? "Shows the header and last lines of crash.txt right here, without pulling the card."
+                                                 : "Shows the header and last lines of log.txt right here, without pulling the card.";
+        rows.push_back({has_crash ? "View crash log" : "View last log", has_crash ? "crash.txt" : "log.txt", help});
+    }
     return rows;
 }
 
@@ -476,6 +541,11 @@ void App::ChangeSheet(int row, int dir, bool press) {
                         "I understand", "Back", true);
         }
         break;
+    case kSheetViewLog:
+        if (press) {
+            OpenLogViewer(Exists(folder + "/crash.txt"));
+        }
+        break;
     default:
         break;
     }
@@ -483,6 +553,9 @@ void App::ChangeSheet(int row, int dir, bool press) {
 
 void App::UpdateSheet(const Input& in) {
     const int count = static_cast<int>(SheetRows().size());
+    if (count > 0 && sheet_cursor >= count) {
+        sheet_cursor = count - 1;
+    }
     if (in.b || in.y) {
         mode = Mode::Shelf;
         return;
@@ -501,6 +574,50 @@ void App::UpdateSheet(const Input& in) {
     }
     if (in.a) {
         ChangeSheet(sheet_cursor, 1, true);
+    }
+}
+
+void App::OpenLogViewer(bool crash) {
+    const Game* game = Selected();
+    if (!game) {
+        return;
+    }
+    const std::string folder = game->Folder();
+    const bool has_crash = Exists(folder + "/crash.txt");
+    const bool has_log = Exists(folder + "/log.txt");
+    log_is_crash = crash && has_crash;
+    log_can_switch = has_crash && has_log;
+    log_card_path = folder + (log_is_crash ? "/crash.txt" : "/log.txt");
+    log_preview = ReadLogPreview(OnCard(log_card_path));
+    log_wrapped = WrapLogLines(font, log_preview.lines, 15, 1140 - 96);
+    const int max_scroll = std::max(0, static_cast<int>(log_wrapped.size()) - kLogVisible);
+    // Start at the top for crash.txt (summary header first) and at the tail for log.txt.
+    log_scroll = log_is_crash ? 0 : max_scroll;
+    mode = Mode::LogViewer;
+}
+
+void App::UpdateLogViewer(const Input& in) {
+    if (in.b) {
+        mode = Mode::Sheet;
+        return;
+    }
+    if (in.x && log_can_switch) {
+        OpenLogViewer(!log_is_crash);
+        return;
+    }
+    const int max_scroll = std::max(0, static_cast<int>(log_wrapped.size()) - kLogVisible);
+    if (in.up && log_scroll > 0) {
+        --log_scroll;
+    }
+    if (in.down && log_scroll < max_scroll) {
+        ++log_scroll;
+    }
+    constexpr int page = kLogVisible - 2;
+    if (in.l || in.zl || in.left) {
+        log_scroll = std::max(0, log_scroll - page);
+    }
+    if (in.r || in.zr || in.right) {
+        log_scroll = std::min(max_scroll, log_scroll + page);
     }
 }
 
@@ -984,6 +1101,9 @@ void App::Draw(Canvas& c) {
             DrawSettings(c);
             DrawPicker(c);
             break;
+        case Mode::LogViewer:
+            DrawLogViewer(c);
+            break;
         default:
             break;
         }
@@ -1022,11 +1142,26 @@ void App::DrawShelfScreen(Canvas& c) {
     FillGradientV(c, 0, 0, W, floor, kColShelfTop, kColShelfHorizon);
     FillGradientV(c, 0, floor, W, H - floor, kColFloorNear, kColFloorFar);
 
-    // Top line: the menu on the left, where we are in the library on the right.
+    // Top line: the menu on the left, subtle host summary in the middle, library position on the right.
     font.Draw(c, 28, 40, kName, 24, kColText);
+    int right_edge = W - 28;
     if (count > 0) {
         const std::string counter = std::to_string(selected + 1) + " of " + std::to_string(count);
-        font.Draw(c, W - 28 - font.Measure(counter, 17), 38, counter, 17, kColTextDim);
+        const int cw = font.Measure(counter, 17);
+        font.Draw(c, W - 28 - cw, 38, counter, 17, kColTextDim);
+        right_edge = W - 28 - cw - 28;
+    }
+    if (mode == Mode::Shelf) {
+        if (const std::string host_line = FormatHostSummary(host); !host_line.empty()) {
+            const int left_edge = 28 + font.Measure(kName, 24) + 28;
+            const int room = right_edge - left_edge;
+            if (room > 160) {
+                const std::string shown = font.Truncate(host_line, 15, room);
+                const int hw = font.Measure(shown, 15);
+                const int hx = std::clamp((W - hw) / 2, left_edge, right_edge - hw);
+                font.Draw(c, hx, 38, shown, 15, HostNeedsWarning(host) ? kColWarnText : kColTextDim);
+            }
+        }
     }
 
     const int radius = 30;
@@ -1286,20 +1421,27 @@ void App::DrawSheet(Canvas& c) {
     }
     Dim(c);
     const int W = c.Width();
-    const int w = 860, x = (W - w) / 2, y = 40, h = 590;
+    const int w = 860, x = (W - w) / 2, y = 26, h = 610;
     c.FillRoundRect(x, y, w, h, 16, kColBg);
     DrawGameHead(c, x, y, w, *game, nullptr);
 
     const std::vector<Row> rows = SheetRows();
-    const int rows_y = y + 96 + 18;
-    DrawRows(c, x + 28, rows_y, w - 56, rows, sheet_cursor);
+    int top = y + 96 + 12;
+    const bool warn = HostNeedsWarning(host);
+    if (warn) {
+        top += DrawBanner(c, font, x + 28, top, w - 56, HostWarningTitle(host), HostWarningBody(host)) + 10;
+    }
+    const int visible = warn ? 4 : 0;
+    DrawRows(c, x + 28, top, w - 56, rows, sheet_cursor, visible);
+    const int shown = visible > 0 ? std::min(static_cast<int>(rows.size()), visible) : static_cast<int>(rows.size());
     if (sheet_cursor < static_cast<int>(rows.size())) {
-        DrawHelp(c, x + 34, rows_y + static_cast<int>(rows.size()) * (kRowH + kRowGap) + 12, w - 68, rows[sheet_cursor].help);
+        DrawHelp(c, x + 34, top + shown * (kRowH + kRowGap) + 12, w - 68, rows[sheet_cursor].help);
     }
 
     // Where the game's things are on the card.
-    c.FillRect(x + 28, y + h - 160, w - 56, 1, kColLine);
+    c.FillRect(x + 28, y + h - 124, w - 56, 1, kColLine);
     const std::string folder = game->Folder();
+    const bool has_crash = Exists(folder + "/crash.txt");
     const auto there = [&](const std::string& path, const char* yes, const char* no) {
         return path + "   " + (Exists(path) ? yes : no);
     };
@@ -1310,13 +1452,15 @@ void App::DrawSheet(Canvas& c) {
         {"Saved data", there(SlotFolder(*game, SlotInUse()), "", "(none yet)")},
         {"File", game->path + "   " + HumanSize(game->size)},
     };
-    int fy = y + h - 134;
-    for (const auto& [label, value] : facts) {
-        font.Draw(c, x + 34, fy, label, 16, kColTextDim);
-        font.Draw(c, x + 34 + 130, fy, font.TruncateFront(value, 16, w - 68 - 130), 16, kColText);
-        fy += 26;
+    int fy = y + h - 102;
+    for (int k = 0; k < 5; ++k) {
+        const auto& [label, value] = facts[k];
+        font.Draw(c, x + 34, fy, label, 15, kColTextDim);
+        const u32 val_col = (k == 2 && has_crash) ? kColWarnText : kColText;
+        font.Draw(c, x + 34 + 130, fy, font.TruncateFront(value, 15, w - 68 - 130), 15, val_col);
+        fy += 22;
     }
-    const bool opens = sheet_cursor == kSheetSaves || sheet_cursor == kSheetAdvanced;
+    const bool opens = sheet_cursor == kSheetSaves || sheet_cursor == kSheetAdvanced || sheet_cursor == kSheetViewLog;
     DrawHints(c, {opens ? std::pair{"A", "Open"} : std::pair{"< >", "Change"}, {"B", "Back"}});
 }
 
@@ -1370,7 +1514,7 @@ void App::DrawSaves(Canvas& c) {
 void App::DrawSettings(Canvas& c) {
     Dim(c);
     const int W = c.Width();
-    const int w = 860, x = (W - w) / 2, y = 34, h = 590;
+    const int w = 860, x = (W - w) / 2, y = 30, h = 598;
     c.FillRoundRect(x, y, w, h, 16, kColBg);
     font.Draw(c, x + 28, y + 46, "Settings", 26, kColText);
     const std::string version = std::string{kName} + " " + kVersion;
@@ -1378,13 +1522,16 @@ void App::DrawSettings(Canvas& c) {
     c.FillRect(x + 28, y + 64, w - 56, 1, kColLine);
 
     const std::vector<Row> rows = SettingsRows();
-    const int rows_y = y + 80;
+    const int rows_y = y + 76;
     DrawRows(c, x + 28, rows_y, w - 56, rows, mode == Mode::Settings ? settings_cursor : -1, kSettingsVisible);
     if (settings_cursor < static_cast<int>(rows.size())) {
-        DrawHelp(c, x + 34, rows_y + kSettingsVisible * (kRowH + kRowGap) + 16, w - 68, rows[settings_cursor].help);
+        DrawHelp(c, x + 34, rows_y + kSettingsVisible * (kRowH + kRowGap) + 14, w - 68, rows[settings_cursor].help);
+    }
+    if (const std::string host_line = FormatHostSummary(host); !host_line.empty()) {
+        font.Draw(c, x + 34, y + h - 38, font.Truncate(host_line, 15, w - 68), 15, HostNeedsWarning(host) ? kColWarnText : kColTextDim);
     }
     const std::string loader = std::string{"Game loader   "} + kGameNro + (Exists(kGameNro) ? "" : "   (NOT THERE: games can't be started)");
-    font.Draw(c, x + 34, y + h - 22, font.TruncateFront(loader, 16, w - 68), 16, Exists(kGameNro) ? kColTextDim : kColError);
+    font.Draw(c, x + 34, y + h - 16, font.TruncateFront(loader, 15, w - 68), 15, Exists(kGameNro) ? kColTextDim : kColError);
     if (mode == Mode::Settings) {
         DrawHints(c, {{"< >", "Change"}, {"A", "Open"}, {"B", "Back"}});
     }
@@ -1489,6 +1636,88 @@ void App::DrawTransfer(Canvas& c) {
     font.Draw(c, x + 28, y + h - 20, "Every large file's figures are kept in /nx2-flow/transfer.log; the receiver's numbers are in /nx2-flow/menu.cfg.", 15,
               kColTextDim);
     DrawHints(c, {{"B", "Back"}});
+}
+
+void App::DrawLogViewer(Canvas& c) {
+    const Game* game = Selected();
+    if (!game) {
+        return;
+    }
+    Dim(c);
+    const int W = c.Width();
+    const int w = 1140, x = (W - w) / 2, y = 30, h = 600;
+    c.FillRoundRect(x, y, w, h, 16, kColBg);
+
+    int tx = x + 28;
+    if (log_is_crash) {
+        DrawIcon(c, Icon::Warning, x + 42.0f, y + 36.0f, 24.0f, kColWarnText);
+        tx += 34;
+    }
+    const char* title = log_is_crash ? "Crash report" : "Last log";
+    font.Draw(c, tx, y + 46, title, 26, kColText);
+
+    const std::string meta = game->title + " \xC2\xB7 " + (log_is_crash ? "crash.txt" : "log.txt") +
+                             (log_preview.ok ? " \xC2\xB7 " + HumanSize(log_preview.file_size) : "");
+    const int meta_room = w - (tx - x) - font.Measure(title, 26) - 56;
+    if (meta_room > 120) {
+        const std::string shown_meta = font.Truncate(meta, 15, meta_room);
+        font.Draw(c, x + w - 28 - font.Measure(shown_meta, 15), y + 44, shown_meta, 15, kColTextDim);
+    }
+    c.FillRect(x + 28, y + 64, w - 56, 1, kColLine);
+
+    const int pane_x = x + 24, pane_y = y + 76, pane_w = w - 48, pane_h = h - 118;
+    c.FillRoundRect(pane_x, pane_y, pane_w, pane_h, 10, kColSurface);
+
+    const int total = static_cast<int>(log_wrapped.size());
+    if (!log_preview.ok) {
+        font.Draw(c, pane_x + 20, pane_y + 42, log_preview.error, 17, kColError);
+    } else if (log_preview.empty || total == 0) {
+        font.Draw(c, pane_x + 20, pane_y + 42, "This file is empty.", 17, kColTextDim);
+    } else {
+        const int line_w = pane_w - 48;
+        int ly = pane_y + 28;
+        for (int k = 0; k < kLogVisible && log_scroll + k < total; ++k) {
+            const std::string& line = log_wrapped[log_scroll + k];
+            if (!line.empty()) {
+                u32 col = kColText;
+                if (line.rfind("--- ", 0) == 0) {
+                    col = kColAccent;
+                } else if (log_is_crash && (line.rfind("ended:", 0) == 0 || line.rfind("console's record:", 0) == 0)) {
+                    col = kColWarnText;
+                }
+                font.Draw(c, pane_x + 16, ly, font.Truncate(line, 15, line_w), 15, col);
+            }
+            ly += 21;
+        }
+        if (total > kLogVisible) {
+            const int track_h = pane_h - 24;
+            const int thumb_h = std::max(24, track_h * kLogVisible / total);
+            const int max_scroll = std::max(1, total - kLogVisible);
+            const int thumb_y = pane_y + 12 + (track_h - thumb_h) * log_scroll / max_scroll;
+            c.FillRoundRect(pane_x + pane_w - 12, pane_y + 12, 4, track_h, 2, kColBg);
+            c.FillRoundRect(pane_x + pane_w - 12, thumb_y, 4, thumb_h, 2, kColTextDim);
+        }
+    }
+
+    const std::string footer_left = log_card_path + (log_preview.truncated ? "   (header + last 120 lines)" : "");
+    std::string footer_right;
+    if (log_preview.ok && total > 0) {
+        const int first_line = log_scroll + 1;
+        const int last_line = std::min(total, log_scroll + kLogVisible);
+        footer_right = "Lines " + std::to_string(first_line) + "-" + std::to_string(last_line) + " of " + std::to_string(total);
+    }
+    const int right_w = footer_right.empty() ? 0 : font.Measure(footer_right, 15) + 24;
+    font.Draw(c, x + 28, y + h - 16, font.TruncateFront(footer_left, 15, w - 56 - right_w), 15, kColTextDim);
+    if (!footer_right.empty()) {
+        font.Draw(c, x + w - 28 - font.Measure(footer_right, 15), y + h - 16, footer_right, 15, kColTextDim);
+    }
+
+    std::vector<std::pair<const char*, const char*>> hints = {{"Up Down", "Scroll"}, {"L R", "Page"}};
+    if (log_can_switch) {
+        hints.push_back({"X", log_is_crash ? "Last log" : "Crash report"});
+    }
+    hints.push_back({"B", "Back"});
+    DrawHints(c, hints);
 }
 
 void App::DrawAsk(Canvas& c) {

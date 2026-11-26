@@ -10,6 +10,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "diagnostics.h"
 #include "library.h"
 
 namespace Flow {
@@ -43,7 +44,7 @@ public:
     float FramePause() const;
 
 private:
-    enum class Mode { Shelf, Sheet, Advanced, Saves, Settings, Picker, Transfer };
+    enum class Mode { Shelf, Sheet, Advanced, Saves, Settings, Picker, Transfer, LogViewer };
     /// A question put to the user over whatever is on screen, and what a yes does.
     enum class Ask { None, OpenAdvanced, DeleteSlot, MakeSlot, LeaveTransfer };
 
@@ -68,9 +69,11 @@ private:
     void UpdateSettings(const Input& in);
     void UpdatePicker(const Input& in);
     void UpdateTransfer(const Input& in, float dt);
+    void UpdateLogViewer(const Input& in);
     void UpdateAsk(const Input& in);
 
     void OpenSheet();
+    void OpenLogViewer(bool crash);
     void OpenPicker();
     void PickerLook();
     void OpenTransfer();
@@ -103,6 +106,7 @@ private:
     void DrawSettings(SwitchFrontend::Ui::Canvas& c);
     void DrawPicker(SwitchFrontend::Ui::Canvas& c);
     void DrawTransfer(SwitchFrontend::Ui::Canvas& c);
+    void DrawLogViewer(SwitchFrontend::Ui::Canvas& c);
     void DrawAsk(SwitchFrontend::Ui::Canvas& c);
     void DrawBusy(SwitchFrontend::Ui::Canvas& c);
     /// `visible`: how many rows fit; more than that scroll, the focused one kept in sight.
@@ -177,6 +181,17 @@ private:
     std::string notice;
     bool notice_error{};
     float notice_left{};
+
+    // Active host diagnostics (queried once at startup).
+    HostInfo host;
+
+    // In-app crash.txt / log.txt tail viewer.
+    std::string log_card_path;
+    bool log_is_crash{};
+    bool log_can_switch{};
+    LogPreview log_preview;
+    std::vector<std::string> log_wrapped;
+    int log_scroll{};
 };
 
 } // namespace Flow
