@@ -154,12 +154,19 @@ void *nx2_nvn_watch(const char *name) {
         fclose(f);
         nogpu = !strncmp(what, "submit", 6) ? 1 : !strncmp(what, "present", 7) ? 2 : 3;
     }
-    if (nogpu || nx2_nvnlock) return (void *)loader_watched;
-
-    // Keep the SDK's native dispatch by default. The watcher is a separate diagnostic (<folder>/nvnwatch).
-    f = fopen(NX2_F("nvnwatch"), "rb");
-    if (!f) return NULL;
-    fclose(f);
+    // (<folder>/nvnnative: the game's driver as its SDK has it, with nothing of this in between. The watching stays the rule: the
+    // log's pictures a second, its longest wait between two and the memory for graphics in use come from it, and so does what
+    // a report of a game that ended says of its last call. For a game that the watching itself is in the way of; pull request
+    // 17, by ptichalouf, after nx2-relink's pull request 27 by cosminneamtiu, which made the native way the rule.)
+    if (!nogpu && !nx2_nvnlock) {
+        f = fopen(NX2_F("nvnnative"), "rb");
+        if (f) {
+            static int said;
+            fclose(f);
+            if (!said++) nx2_log("[nvn] <folder>/nvnnative: the game's driver is not watched, and the log has no line of how fast the game runs\n");
+            return NULL;
+        }
+    }
     return (void *)loader_watched;
 }
 #endif

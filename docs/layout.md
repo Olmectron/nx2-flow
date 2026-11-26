@@ -19,11 +19,15 @@ Two homebrew programs for a Switch 2, both in one folder of the card so that the
 /nx2-flow/<title id>/              one game's folder, named by its title id (16 hex digits, lower case):
     save/                            its saved data: the slot named "default"
     saves/<slot>/                    its saved data, other slots: one folder each, named by the user
+    cache/<index>/                   its "cache storage", what a game keeps that it can make again: one folder for each
+                                     index (four hex digits), apart from the saved data and the same for every slot
     log.txt  log.prev.txt  crash.txt the loader's log of the last run, of the one before, and a run that ended badly
     mods/                            files laid over the game's own (the default set)
     modsets/<name>/                  other sets of such files, one folder each
     game.cfg                         the game's settings, lines of key=value
     debug                            an empty file: the detailed log is on
+    nvnnative                        an empty file: the game's calls to the graphics driver are not counted by the loader
+                                     (the log then has no line of how fast the game runs). For a game that needs it only
 ```
 
 `<ID>` is the title id, or the code GameTDB names the game's cover by.
