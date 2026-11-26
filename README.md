@@ -16,6 +16,14 @@ that runs the one you pick straight from its NUP file. Nothing is built for each
 
 **Work in progress.** It has been tried with few games and one setup (kaiHEN 20261117.1).
 
+## This fork: a NUP file in parts
+
+A FAT32 card keeps no file of 4 GiB or more, and games are larger. Here a NUP file is copied onto the card in parts,
+`<name>.nup.001`, `.002`, ..., each as long as the others but the last. Nothing else changes: the menu shows the parts as the one
+game they are, the game loader reads them so, and the menu's receiver of files takes a NUP file too large for the card in parts
+as it comes from a computer. `tools/nup_parts.py` checks a copy on the card against the file it was made from
+(`python tools/nup_parts.py` says how). `docs/layout.md` says more.
+
 ## The two programs
 
 | folder | program | what it is | license |
@@ -37,6 +45,7 @@ card's root.
 /switch/nx2-flow/nx2-flow.nro      the menu (what the homebrew menu shows)
 /switch/nx2-flow/nx2-game.nro      the game loader
 /nx2-flow/games/                   your NUP files (another folder can be picked in the menu)
+/nx2-flow/games/<name>.nup.001 …   a NUP file too large for the card's one file, in parts: one game, as the menu sees it
 /nx2-flow/covers/                  covers
 /nx2-flow/<title id>/              one folder for each game: saved data, logs, mods, settings
 ```
@@ -69,6 +78,9 @@ The menu's Transfer screen takes the file from a computer; `menu/README.md` has 
 - **Not every game runs.** The console's loader service maps seven modules for one program. A game with more, or one that
   loads modules of its own as it runs, has the ones that allow it made into one by the loader; a game that still doesn't fit
   needs a port made for it with nx2-relink.
+- **A game larger than one file of a FAT32 card** (4 GiB less a byte) is kept in parts: `Game.nup.001`, `.002`, ..., numbered
+  from 1 (from 0 is read too), each as long as the others but the last. It stands on the shelf as one game. A set with a part
+  missing, or with parts of more than one size, says why it can't be started; at most 64 parts are read.
 - **Mods.** A file put in the game's folder under `mods/`, at the path it has inside the game, is what the game gets in place of
   its own. More sets go in `modsets/<name>/`; the menu picks which is in use.
 - **Slots of saved data.** Each slot is a folder of the game's own saved data; the menu makes, copies and picks them.
@@ -77,3 +89,6 @@ The menu's Transfer screen takes the file from a computer; `menu/README.md` has 
 ## Building
 
 Each folder has its own README. In short: devkitPro (devkitA64), ounce-devkit (libounce) for the two programs, Python 3.10 or newer for the loader's build script.
+
+The parts are tried on a computer, where neither program runs: `python tools/test_parts.py` in `loader/` (where each byte of a
+file in parts is), `make partstest` in `menu/` (a game in parts on the shelf, and the receiver with one).

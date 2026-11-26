@@ -12,6 +12,7 @@ Two homebrew programs for a Switch 2, both in one folder of the card so that the
 ```
 /nx2-flow/menu.cfg                 the menu's settings, lines of key=value
 /nx2-flow/games/                   the NUP files (the default; menu.cfg's "games" names another folder)
+/nx2-flow/games/<name>.nup.001 …   a NUP file too large for one file of the card, in parts (below)
 /nx2-flow/covers/<ID>.jpg|png      a game's front cover;  covers/full/<ID>.jpg|png  the whole wrap
 /nx2-flow/covers/ids.txt           lines of <title id>=<GameTDB code>: which code a game's cover is filed under
 /nx2-flow/cache/                   the menu's own: what it read of each NUP file (library.txt) and the games' icons
@@ -41,6 +42,7 @@ Two homebrew programs for a Switch 2, both in one folder of the card so that the
 | `transfer_block_kb` | the receiver's one write to the card, in KB (64 to 4096; 1024 when absent) |
 | `transfer_queue` | how many such blocks may wait for the card before the network is held back (2 to 64; 8 when absent) |
 | `transfer_rcvbuf_kb` | the receiving socket's own buffer, in KB (64 to 2048; 256 when absent) |
+| `transfer_part_mb` | how large each part is in which a NUP file too large for the card is received, in MB (1 to 4095; 4095 when absent). By hand: Settings has no row for it |
 
 The loader reads none of these: they are the menu's.
 
@@ -61,6 +63,31 @@ The detailed log is not a key: it is the file `debug` in the game's folder.
 
 A slot's name, as the menu makes them: letters, digits, spaces, `-`, `_` and `.`, at most 32 characters, never `default` (that
 is `save/`). A `save` that names a folder that isn't there is the loader's to make.
+
+## A NUP file in parts
+
+A FAT32 card keeps no file of 4 GiB or more (one there is 4 GiB less one byte at most), and a game's NUP file is larger. One is
+copied onto the card in parts, cut at any byte, each part as long as the others but the last:
+
+```
+/nx2-flow/games/Game.nup.001
+/nx2-flow/games/Game.nup.002
+...
+```
+
+- Numbered from 1, three digits wide unless there are more parts than those hold: the way the tools that copy files onto such
+  a card split them. Parts numbered from 0, and of any width, are read too (nx2-relink numbers its own files' parts from 0).
+- Nothing in the file changes: the parts in order are the file. Nothing is done to the file on the computer to make them, and
+  nothing to join them again.
+- The menu shows the parts as one game, `Game.nup`, and starts the game loader with that name; the loader finds the parts in
+  the folder. A whole file is as before; where `Game.nup` itself is, with parts beside it, the file stands alone.
+- A set is whole when its numbers follow one another from 0 or 1, every part but the last is one size, and the parts are as many
+  bytes in all as the file's own first bytes say it is. One that isn't is on the shelf all the same, with why it can't be started:
+  "its parts hold 12.0 GB of its 23.9 GB: a copy that was cut short". Copy it again.
+- At most 64 parts are read (255 GiB, in parts of 4095 MB).
+- A part still being received is `Game.nup.003.ttpart`: not a part yet.
+- `tools/nup_parts.py`, on a computer, says of a set on the card whether it is whole and what game it is (`check`), and reads
+  it against the file it was copied from (`verify`).
 
 ## Starting a game
 
@@ -87,3 +114,9 @@ size first, and at most `transfer_queue` blocks wait between the two: when the c
 socket, whose buffer is small (`transfer_rcvbuf_kb`), so the sender is held back by the connection itself. `transfer_kbps` caps the
 pace from the first byte. Every file of 8 MB or more leaves three lines in `/nx2-flow/transfer.log`: seconds, MB a second, the
 longest time with nothing written, how full the queue got, how long the writes took, and where the time went.
+
+A NUP file too large for one file of the card is received in parts, as above, each part given its size as it begins, and is
+`Game.nup.003.ttpart` until every byte of the file is on the card. Whether the card can hold a file as one is asked of it by
+reserving the file's size, as for any file; a file of any other kind that it can't hold is refused, as before. A file in parts is
+sent back, hashed and deleted by the file's name, as one. What was there of the file from before goes: the file as one, and parts
+other than those received.
