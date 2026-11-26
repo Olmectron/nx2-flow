@@ -74,4 +74,10 @@ bool Read(const std::string& path, Info& out, std::string& error);
 /// The same of a container in parts.
 bool Read(const std::vector<Part>& parts, Info& out, std::string& error);
 
+/// Extracts title, publisher (the first language that has one) and display version from a
+/// control.nacp blob, filling only fields that are currently empty. Supports uncompressed
+/// format 0 and Horizon OS 21.0.0+ raw-DEFLATE compressed format 1.
+void FromNacp(const std::vector<std::uint8_t>& nacp, std::string& title, std::string& publisher,
+              std::string& version);
+
 } // namespace Nup
