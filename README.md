@@ -37,6 +37,24 @@ The loader is the runtime of [nx2-relink](https://github.com/Olmectron/nx2-relin
 
 Open the homebrew menu over a game (hold R while starting it), start **nx2-flow**, pick a game.
 
+## Your own cover
+
+Any picture can be a game's cover: put it on the card, named by the game's title id.
+
+```
+/nx2-flow/covers/<title id>.jpg         the front only
+/nx2-flow/covers/full/<title id>.jpg    the whole wrap: back, spine and front, left to right
+```
+
+- The title id is 16 hex digits: the name of the game's folder in `/nx2-flow/` (it is made the first time the game is started).
+- `.jpg`, `.jpeg` or `.png`. With both a front and a wrap, the wrap is shown.
+- The picture is fitted to the case, so its shape matters more than its size: a front is about 0.615 as wide as it is tall
+  (500 × 813, say), a whole wrap about 1.3 times as wide as it is tall (1300 × 1000).
+- A game with no cover stands as a case made of its own icon and name.
+
+The menu's Transfer screen takes the file from a computer; `menu/README.md` has the other ways to get covers (GameTDB, another
+console).
+
 ## What to know
 
 - **Which game the homebrew menu is started over matters.** To the console the running program is that game, and has what that
