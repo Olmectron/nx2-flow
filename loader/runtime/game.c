@@ -1116,6 +1116,51 @@ static u32 byml_get(const u8 *b, u64 size, u64 map, const char *key, u32 *value)
     }
     return 0;
 }
+// (a BYML integer entry decoded to signed KB: 1 if an integer type, 0 otherwise)
+static int byml_size_kb(const u8 *b, u64 size, u32 kind, u32 v, s64 *out) {
+    if (kind == 0xD1) {
+        *out = (s32)v;
+        return 1;
+    }
+    if (kind == 0xD3) {
+        *out = (s64)(u64)v;
+        return 1;
+    }
+    if (kind == 0xD4 && (u64)v + 8 <= size) {
+        *out = (s64)r64(b + v);
+        return 1;
+    }
+    if (kind == 0xD5 && (u64)v + 8 <= size) {
+        const u64 raw = r64(b + v);
+        if (raw > (u64)INT64_MAX) return 0;
+        *out = (s64)raw;
+        return 1;
+    }
+    return 0;
+}
+// (walk a HeapDef.byml Heaps map once: VirtualAddressMemory Size in KB, and sum of top-level fixed heaps without Parent)
+static void byml_scan_heaps(const u8 *b, u64 size, u64 map, u64 *vam_kb, u64 *fixed_kb) {
+    const u64 keys = r32(b + 4);
+    if (map + 4 > size || b[map] != 0xC1 || keys + 4 > size || b[keys] != 0xC2) return;
+    const u32 n = r32(b + map) >> 8, nkeys = r32(b + keys) >> 8;
+    for (u32 k = 0; k < n && map + 12 + 8ull * k <= size; k++) {
+        const u32 w = r32(b + map + 4 + 8 * k), entry_kind = w >> 24, index = w & 0xFFFFFF;
+        if (entry_kind != 0xC1 || index >= nkeys || keys + 8 + 4ull * index > size) continue;
+        const u64 at = keys + r32(b + keys + 4 + 4 * index);
+        if (at >= size) continue;
+        const u32 entry_val = r32(b + map + 8 + 8 * k);
+        u32 sv = 0, pv = 0;
+        const u32 sk = byml_get(b, size, entry_val, "Size", &sv);
+        s64 sz_kb = 0;
+        if (!byml_size_kb(b, size, sk, sv, &sz_kb)) continue;
+        const int is_vam = (size - at > 20) && !memcmp(b + at, "VirtualAddressMemory", 21);
+        if (is_vam) {
+            if (sz_kb > 0) *vam_kb = (u64)sz_kb;
+        } else if (!byml_get(b, size, entry_val, "Parent", &pv)) {
+            if (sz_kb > 0 && (u64)sz_kb < (64ull << 20)) *fixed_kb += (u64)sz_kb;
+        }
+    }
+}
 static void heaps_read(void) {
     // the table: of those in System/HeapSize, the Switch 2's own ("Ounce" in its name), and of those the game's as sold ("Product")
     const Rom *r = &roms[0];
@@ -1154,19 +1199,28 @@ static void heaps_read(void) {
     } else {
         byml = raw;
     }
-    u32 v = 0, kind = 0;
+    u32 v = 0;
+    u64 kb = 0, fixed_kb = 0;
     if (byml && size > 16 && byml[0] == 'Y' && byml[1] == 'B') {
         const u64 root = r32(byml + 12);
-        if (byml_get(byml, size, root, "Heaps", &v) == 0xC1 && byml_get(byml, size, v, "VirtualAddressMemory", &v) == 0xC1) kind = byml_get(byml, size, v, "Size", &v);
+        if (byml_get(byml, size, root, "Heaps", &v) == 0xC1) byml_scan_heaps(byml, size, v, &kb, &fixed_kb);
     }
-    u64 kb = 0;
-    if (kind == 0xD1 || kind == 0xD3) kb = v;
-    else if ((kind == 0xD4 || kind == 0xD5) && (u64)v + 8 <= size) kb = r64(byml + v);
     if (!byml) nx2_log("[game] the game's table of heaps (%u KB) couldn't be unpacked: it is told of memory as a game that has none\n", table->size >> 10);
     else if (kb >= 1024 && kb < (16ull << 20)) {
         nx2_game_apart_mb = (u32)(kb >> 10), nx2_game_mb = 8992, nx2_game_room_mb = 64;
         nx2_log("[game] the game's own table of heaps keeps %u MB of address space apart from its heap: it is told of the console's 8992 MB, as on its console\n",
                 (u64)nx2_game_apart_mb);
+    } else if (fixed_kb >= (5120ull << 10) && fixed_kb < (16ull << 20)) {
+        // (Some Switch 2 games, such as Mario Kart World, reserve address space in code without a VirtualAddressMemory entry in
+        // HeapDef.byml while declaring 5+ GB of fixed top-level heaps: telling them less than the console's 8992 MB starves their
+        // remaining heaps at boot.)
+        const u32 fixed_mb = (u32)((fixed_kb + 1023) >> 10);
+        u32 apart = 8992 > fixed_mb + 900 ? 8992 - fixed_mb - 900 : 1024;
+        if (apart < 1024) apart = 1024;
+        if (apart > 1500) apart = 1500;
+        nx2_game_apart_mb = apart, nx2_game_mb = 8992, nx2_game_room_mb = 64;
+        nx2_log("[game] the game's own table of heaps has %u MB of fixed heaps and no VirtualAddressMemory entry: it is told of the console's 8992 MB (assuming %u MB apart)\n",
+                (u64)fixed_mb, (u64)nx2_game_apart_mb);
     } else
         nx2_log("[game] the game's own table of heaps keeps no address space apart from its heap\n");
     nx2_big_free(byml);
