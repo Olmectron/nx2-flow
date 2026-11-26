@@ -1255,7 +1255,16 @@ u64 nx2_game_room_end(void) {
         if (cache > all) cache = all;
         cache += 16u << 20;
     }
-    return big_end_wanted(cache);
+    // Whole modules' bss (whole.c: nx2_map_modules runs after main.c trims the loader's stretch, so keep room for them here).
+    u64 bss_need = 0;
+    for (unsigned k = 0; k < nx2_module_count; k++) {
+        const Nx2Image *im = &nx2_images[k];
+        if (!im->image) continue;
+        const u64 rw_end = (im->image_size + 0xFFFull) & ~0xFFFull;
+        const u64 bss_size = (nx2_modules[k].end > rw_end ? nx2_modules[k].end - rw_end : 0) + 0x1000ull;
+        bss_need += (bss_size + 0xFFFull) & ~0xFFFull;
+    }
+    return big_end_wanted(bss_need + cache);
 }
 
 // 0: the game of this NUP file is ready to be started: its modules unpacked, its files' image made, its folder there.
