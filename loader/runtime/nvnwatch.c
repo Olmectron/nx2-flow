@@ -145,6 +145,7 @@ static void *loader_watched(const char *name) {
 // (gl2.c asks, for a game whose graphics are its own SDK's)
 void *nx2_nvn_watch(const char *name) {
     if (strcmp(name, "nvnBootstrapLoader")) return NULL;
+    nogpu = 0;
     FILE *f = fopen(NX2_F("nogpu"), "rb");
     // (the file says which: "submit", "present", or anything else for both)
     if (f) {
@@ -153,6 +154,12 @@ void *nx2_nvn_watch(const char *name) {
         fclose(f);
         nogpu = !strncmp(what, "submit", 6) ? 1 : !strncmp(what, "present", 7) ? 2 : 3;
     }
+    if (nogpu || nx2_nvnlock) return (void *)loader_watched;
+
+    // Keep the SDK's native dispatch by default. The watcher is a separate diagnostic (<folder>/nvnwatch).
+    f = fopen(NX2_F("nvnwatch"), "rb");
+    if (!f) return NULL;
+    fclose(f);
     return (void *)loader_watched;
 }
 #endif
