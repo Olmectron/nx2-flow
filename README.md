@@ -111,3 +111,16 @@ The menu's Transfer screen takes the file from a computer; `menu/README.md` has 
 ## Building
 
 Each folder has its own README. In short: devkitPro (devkitA64), ounce-devkit (libounce) for the two programs, Python 3.10 or newer for the loader's build script.
+
+## Contributing
+
+Pull requests are welcome, for the menu and for the loader alike: both are this repository's own source. What helps one get in:
+
+- Say what it was tried with (the game by its title id, the host, docked or handheld) and attach the lines of `log.txt` or
+  `crash.txt` that show the before and the after.
+- Keep to what the change is for. A change for one game runs in every other one too: say what it does to a game that
+  doesn't need it.
+- No game's file, key or console file in a pull request or an issue, and no link to one.
+
+The loader's runtime (`loader/runtime`) is shared with [nx2-relink](https://github.com/Olmectron/nx2-relink): a fix made there is
+brought here, and one made here may go there.
