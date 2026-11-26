@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "library.h"
+#include "nup_health.h"
 
 namespace Flow {
 
@@ -43,9 +44,9 @@ public:
     float FramePause() const;
 
 private:
-    enum class Mode { Shelf, Sheet, Advanced, Saves, Settings, Picker, Transfer };
+    enum class Mode { Shelf, Sheet, Advanced, Saves, Settings, Picker, Transfer, Health };
     /// A question put to the user over whatever is on screen, and what a yes does.
-    enum class Ask { None, OpenAdvanced, DeleteSlot, MakeSlot, LeaveTransfer };
+    enum class Ask { None, OpenAdvanced, DeleteSlot, MakeSlot, LeaveTransfer, LaunchWarning };
 
     struct Row {
         std::string label;
@@ -68,7 +69,12 @@ private:
     void UpdateSettings(const Input& in);
     void UpdatePicker(const Input& in);
     void UpdateTransfer(const Input& in, float dt);
-    void UpdateAsk(const Input& in);
+    void UpdateHealth(const Input& in);
+    Request UpdateAsk(const Input& in);
+
+    Request BuildLaunchRequest(const Game& game) const;
+    void BeginHealthCheck();
+    void FinishHealthCheck();
 
     void OpenSheet();
     void OpenPicker();
@@ -103,6 +109,7 @@ private:
     void DrawSettings(SwitchFrontend::Ui::Canvas& c);
     void DrawPicker(SwitchFrontend::Ui::Canvas& c);
     void DrawTransfer(SwitchFrontend::Ui::Canvas& c);
+    void DrawHealth(SwitchFrontend::Ui::Canvas& c);
     void DrawAsk(SwitchFrontend::Ui::Canvas& c);
     void DrawBusy(SwitchFrontend::Ui::Canvas& c);
     /// `visible`: how many rows fit; more than that scroll, the focused one kept in sight.
@@ -157,6 +164,11 @@ private:
     bool ask_warning{};
     std::string ask_name; // The slot it is about.
     bool ask_copy{};
+    Request pending_launch;
+
+    // Pre-launch NUP container health check.
+    bool health_pending{};
+    Nup::HealthReport health_report;
 
     // The settings page and its folder picker.
     int settings_cursor{};
