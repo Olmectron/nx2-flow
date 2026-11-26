@@ -59,17 +59,18 @@ void __libnx_initheap(void) {
             u64 room = 384;
             const char *said = envGetArgv();
             for (const char *c = said; c && *c; c++)
-                if (c[0] == 'r' && c[1] == 'o' && c[2] == 'o' && c[3] == 'm' && c[4] == '=' && (c == said || c[-1] == ' ')) {
+                if (c[0] == 'r' && c[1] == 'o' && c[2] == 'o' && c[3] == 'm' && c[4] == '=' && (c == said || c[-1] == ' ' || c[-1] == '"')) {
                     u64 mb = 0;
-                    for (const char *d = c + 5; *d >= '0' && *d <= '9'; d++) mb = mb * 10 + (u64)(*d - '0');
-                    if (mb >= 128 && mb <= 2048) room = mb;
+                    const char *d = c + 5;
+                    for (; *d >= '0' && *d <= '9'; d++) mb = mb * 10 + (u64)(*d - '0');
+                    if ((*d == '\0' || *d == ' ' || *d == '"') && mb >= 128 && mb <= 2048) room = mb;
                 }
             host += room << 20;
             loader_room = room << 20;
         }
 #endif
         u64 base = 0, end = 0;
-        if (addr && size > 4 * host && R_SUCCEEDED(svcGetInfo(&base, InfoType_HeapRegionAddress, CUR_PROCESS_HANDLE, 0))) {
+        if (addr && size > 2 * host && R_SUCCEEDED(svcGetInfo(&base, InfoType_HeapRegionAddress, CUR_PROCESS_HANDLE, 0))) {
             for (end = base;;) {  // where the heap ends now
                 MemoryInfo mi;
                 u32 pi;
