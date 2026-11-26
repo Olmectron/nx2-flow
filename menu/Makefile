@@ -15,7 +15,7 @@ $(error "Please set DEVKITPRO in your environment. export DEVKITPRO=<path to>/de
 endif
 
 TARGET   := nx2-flow
-VERSION  := 0.2.0
+VERSION  := 0.2.1
 OUT      := out
 SOURCES  := app covers images library nup transfer main_switch
 HEADERS  := $(wildcard source/*.h)
