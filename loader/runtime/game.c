@@ -33,6 +33,7 @@ char nx2_game_id[17] = "unknown";
 // 400 MB, 8192 at most; the console's 8992 for a game whose table of heaps keeps a stretch apart; game.cfg's figure otherwise.
 // tools/build.py and main.c have the story.)
 u32 nx2_game_mb = 8192, nx2_game_room_mb = 400, nx2_game_apart_mb, nx2_game_remote_mb, nx2_game_sysres_kb;
+s64 nx2_game_save_data_size, nx2_game_save_journal_size;
 Nx2Module nx2_modules[MODULES];
 Nx2Image nx2_images[MODULES];
 unsigned nx2_module_count;
@@ -1267,6 +1268,40 @@ u64 nx2_game_room_end(void) {
     return big_end_wanted(bss_need + cache);
 }
 
+// NUP package metadata TLV helpers (menu/source/nup.cpp: facts are numbered from 0 or 1; NPDM begins with "META", NACP is first_fact + 1).
+int nx2_nup_meta_first_fact(const u8 *meta, u64 meta_size) {
+    for (u64 at = 0; at + 8 <= meta_size;) {
+        const u16 kind = (u16)((u16)meta[at] | (u16)meta[at + 1] << 8);
+        const u32 size = r32(meta + at + 4);
+        if ((u64)size > meta_size - (at + 8)) break;
+        if (size >= 4 && !memcmp(meta + at + 8, "META", 4)) return (int)kind;
+        at += 8 + (u64)size;
+    }
+    return -1;
+}
+
+int nx2_nup_meta_save_sizes(const u8 *meta, u64 meta_size, int first_fact, s64 *out_data, s64 *out_journal) {
+    if (first_fact < 0 || first_fact >= 0xFFFF) return 0;
+    const u16 nacp_kind = (u16)(first_fact + 1);
+    for (u64 at = 0; at + 8 <= meta_size;) {
+        const u16 kind = (u16)((u16)meta[at] | (u16)meta[at + 1] << 8);
+        const u32 size = r32(meta + at + 4);
+        if ((u64)size > meta_size - (at + 8)) break;
+        if (kind == nacp_kind && size >= 0x3090) {
+            // libounce NacpStruct: user_account_save_data_size at 0x3080, user_account_save_data_journal_size at 0x3088.
+            const s64 data = (s64)r64(meta + at + 8 + 0x3080);
+            const s64 journal = (s64)r64(meta + at + 8 + 0x3088);
+            if (data >= 0 && journal >= 0 && (data > 0 || journal > 0)) {
+                if (out_data) *out_data = data;
+                if (out_journal) *out_journal = journal;
+                return 1;
+            }
+        }
+        at += 8 + (u64)size;
+    }
+    return 0;
+}
+
 // 0: the game of this NUP file is ready to be started: its modules unpacked, its files' image made, its folder there.
 int nx2_game_open(const char *path) {
     if (nup_open(path)) return -1;
@@ -1371,6 +1406,41 @@ int nx2_game_open(const char *path) {
             if (nx2_game_remote_mb > 4096) nx2_game_remote_mb = 0;
             if (nx2_game_sysres_kb > (4096u << 10)) nx2_game_sysres_kb = 0;
         }
+    }
+    {  // user account save data size from the newest package's control.nacp TLV (default for nn::fs::GetSaveDataSize before ExtendSaveData)
+        nx2_game_save_data_size = 0, nx2_game_save_journal_size = 0;
+        int first_fact = -1, checked_newest = 0;
+        for (u32 k = count; k-- > 0 && first_fact < 0;) {
+            const Package p = nup_package(layers[k]);
+            if (!p.meta_size || p.meta_size > (8u << 20) || p.meta_at > nup.size || p.meta_size > nup.size - p.meta_at) continue;
+            u8 *block = nx2_big_alloc(p.meta_size, 0);
+            if (!block) continue;
+            if (!nup_read(p.meta_at, block, p.meta_size)) {
+                first_fact = nx2_nup_meta_first_fact(block, p.meta_size);
+                if (first_fact >= 0 && k == count - 1) {
+                    checked_newest = 1;
+                    nx2_nup_meta_save_sizes(block, p.meta_size, first_fact, &nx2_game_save_data_size, &nx2_game_save_journal_size);
+                }
+            }
+            nx2_big_free(block);
+        }
+        if (first_fact < 0) first_fact = 0;
+        if (!nx2_game_save_data_size && !nx2_game_save_journal_size) {
+            const u32 start = checked_newest ? count - 1 : count;
+            for (u32 k = start; k-- > 0;) {
+                const Package p = nup_package(layers[k]);
+                if (!p.meta_size || p.meta_size > (8u << 20) || p.meta_at > nup.size || p.meta_size > nup.size - p.meta_at) continue;
+                u8 *block = nx2_big_alloc(p.meta_size, 0);
+                if (!block) continue;
+                int found = 0;
+                if (!nup_read(p.meta_at, block, p.meta_size))
+                    found = nx2_nup_meta_save_sizes(block, p.meta_size, first_fact, &nx2_game_save_data_size, &nx2_game_save_journal_size);
+                nx2_big_free(block);
+                if (found) break;
+            }
+        }
+        if (nx2_game_save_data_size > 0 || nx2_game_save_journal_size > 0)
+            nx2_log("[game] control.nacp: save data %u KB, journal %u KB\n", (u64)nx2_game_save_data_size >> 10, (u64)nx2_game_save_journal_size >> 10);
     }
 
     // the files: each package's over the ones before, then the user's own folder

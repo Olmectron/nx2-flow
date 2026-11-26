@@ -707,6 +707,13 @@ u32 nx2_get_save_data_size(s64 *out_data, s64 *out_journal, const void *uid, u32
         if (out_journal) *out_journal = __atomic_load_n(&extended_save_journal_size, __ATOMIC_RELAXED);
         return 0;
     }
+#ifdef NX2_LOADER
+    if (nx2_game_save_data_size > 0 || nx2_game_save_journal_size > 0) {
+        if (out_data) *out_data = nx2_game_save_data_size;
+        if (out_journal) *out_journal = nx2_game_save_journal_size;
+        return 0;
+    }
+#endif
     return real ? real(out_data, out_journal, uid) : 0x2EE202;
 }
 
