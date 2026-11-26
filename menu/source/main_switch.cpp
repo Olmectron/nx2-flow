@@ -432,6 +432,9 @@ int main(int, char**) {
             // The game loader, started next by the homebrew loader with the container to run,
             // this menu to come back to and, when the game's settings have one, the room the
             // loader is to keep (docs/layout.md). Each argument in quotes: a file's name has spaces.
+            // A container cut in parts is named by its first part, or by the folder of parts that
+            // have no name of their own: the loader finds the rest by the rules the menu listed
+            // it by (loader/runtime/nupparts.h).
             const std::string loader = Flow::OnCard(Flow::kGameNro);
             std::string args = "\"" + loader + "\" \"" + Flow::OnCard(request.nup) + "\" \"menu=" + Flow::OnCard(Flow::kMenuNro) + "\"";
             if (!request.room.empty()) {

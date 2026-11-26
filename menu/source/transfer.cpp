@@ -32,6 +32,7 @@
 
 #include "app.h"
 #include "library.h"
+#include "nup.h"
 
 namespace Transfer {
 namespace {
@@ -397,6 +398,148 @@ bool WriteAll(int file, const u8* data, std::size_t size) {
     return true;
 }
 
+// What a card of the FAT32 kind can't hold in one file, and the size of a part on such a card:
+// the most under 4 GB that is a whole number of the card's clusters, whatever their size.
+constexpr u64 kTooLarge = 1ull << 32;
+constexpr u64 kPartSize = 0xFFFF0000;
+
+/// A file received as parts: "<name>.001", "<name>.002", ... beside where the whole file would
+/// be, each written under another name ("<name>.001.ttpart") until all of them have arrived.
+struct PartsOut {
+    std::string path; // The whole file's, as the C library takes it.
+    u64 size{}, part_size{};
+    int count{};      // 0: the file is written whole, and nothing here is used.
+    int file{-1};
+    int at{};         // The part being written, from 0.
+    u64 room{};       // What that part still takes.
+
+    /// False (and count stays 0) when parts of this size aren't the way: the file fits in one,
+    /// or there would be more than the menu and the loader read.
+    bool Plan(const std::string& whole, u64 whole_size, u64 each) {
+        const u64 parts = (whole_size + each - 1) / each;
+        if (parts < 2 || parts > static_cast<u64>(Nup::kMostParts)) {
+            return false;
+        }
+        path = whole;
+        size = whole_size;
+        part_size = each;
+        count = static_cast<int>(parts);
+        return true;
+    }
+
+    std::string Final(int k) const {
+        char ending[16];
+        std::snprintf(ending, sizeof ending, ".%03d", k + 1);
+        return path + ending;
+    }
+    std::string Arriving(int k) const {
+        return Final(k) + ".ttpart";
+    }
+    u64 SizeOf(int k) const {
+        return k + 1 < count ? part_size : size - part_size * static_cast<u64>(count - 1);
+    }
+
+    /// Every part made, at its whole size: a file that grows block by block is what makes a
+    /// card slow, and a card with no room says so before anything is sent. 0, or the error and
+    /// what was being done.
+    int Reserve(const char*& what) {
+        for (int k = 0; k < count; ++k) {
+            int error = 0;
+            const int made = open(Arriving(k).c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0666);
+            if (made < 0) {
+                error = errno;
+                what = "create";
+            } else {
+                if (ftruncate(made, static_cast<off_t>(SizeOf(k))) != 0) {
+                    error = errno;
+                    what = "reserve space";
+                }
+                if (close(made) != 0 && error == 0) {
+                    error = errno;
+                    what = "reserve space";
+                }
+            }
+            if (error != 0) {
+                Discard();
+                return error;
+            }
+        }
+        return 0;
+    }
+
+    /// The next bytes of the whole file, into the part they belong to (a block may end one part
+    /// and begin the next).
+    bool Write(const u8* data, std::size_t length) {
+        while (length > 0) {
+            if (room == 0) {
+                if (file >= 0) {
+                    const int closed = close(file);
+                    file = -1;
+                    ++at;
+                    if (closed != 0) {
+                        return false;
+                    }
+                }
+                if (at >= count) {
+                    errno = EFBIG;
+                    return false;
+                }
+                file = open(Arriving(at).c_str(), O_WRONLY);
+                if (file < 0) {
+                    return false;
+                }
+                room = SizeOf(at);
+            }
+            const std::size_t now = static_cast<std::size_t>(std::min<u64>(length, room));
+            if (!WriteAll(file, data, now)) {
+                return false;
+            }
+            data += now;
+            length -= now;
+            room -= now;
+        }
+        return true;
+    }
+
+    /// 0, or the error.
+    int Close() {
+        if (file < 0) {
+            return 0;
+        }
+        const int closed = close(file);
+        file = -1;
+        return closed == 0 ? 0 : errno != 0 ? errno : EIO;
+    }
+
+    /// What has arrived, deleted.
+    void Discard() {
+        for (int k = 0; k < count; ++k) {
+            unlink(Arriving(k).c_str());
+        }
+    }
+
+    /// The parts given their names, in place of what the file was before: whole, or the parts
+    /// of another time it was sent. 0, or the error (and then no part is left).
+    int Commit() {
+        unlink(path.c_str());
+        for (int k = 0; k < count; ++k) {
+            unlink(Final(k).c_str());
+            if (rename(Arriving(k).c_str(), Final(k).c_str()) != 0) {
+                const int error = errno;
+                Discard();
+                for (int done = 0; done < k; ++done) {
+                    unlink(Final(done).c_str()); // (some of a game's parts would be listed as a game that can't be read)
+                }
+                return error;
+            }
+        }
+        for (int k = count; k < 999 && unlink(Final(k).c_str()) == 0; ++k) {
+            // (parts left of a longer file of this name)
+        }
+        return 0;
+    }
+};
+
 // ----------------------------------------------------------------------------------- commands
 
 bool DoPing(int fd) {
@@ -462,24 +605,54 @@ bool DoPut(int fd, const std::string& path, const std::string& shown) {
         size = size << 8 | raw[k];
     }
     Flow::MakeFolders(FolderOf(shown));
-    const std::string part = path + ".ttpart";
-    const int file = open(part.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0666);
-    if (file < 0) {
-        SendStatus(fd, errno, "create");
-        return false; // The data that follows cannot be told from a command: hang up.
+    // In parts from the start only when menu.cfg asks for it. Otherwise the whole file is tried
+    // first, as it always was, and parts are what is done about a file of 4 GB or more that the
+    // card won't have: one of the FAT32 kind refuses it when it is made or given its size. (A
+    // card that is merely full refuses the parts as well, and says so.)
+    PartsOut parts;
+    if (g_tuning.split_mb > 0 && size > static_cast<u64>(g_tuning.split_mb) << 20) {
+        parts.Plan(path, size, static_cast<u64>(g_tuning.split_mb) << 20);
     }
-    // The whole size at once: a file that grows block by block is what makes a card slow.
-    const Clock::time_point reserve_started = Clock::now();
-    if (size > 0 && ftruncate(file, static_cast<off_t>(size)) != 0) {
-        const int error = errno;
-        close(file);
-        unlink(part.c_str());
-        SendStatus(fd, error, "reserve space");
-        return false;
+    const std::string part = path + ".ttpart";
+    int file = -1;
+    Clock::time_point reserve_started = Clock::now();
+    if (parts.count == 0) {
+        file = open(part.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0666);
+        if (file < 0) {
+            const int error = errno;
+            if (size < kTooLarge || !parts.Plan(path, size, kPartSize)) {
+                SendStatus(fd, error, "create");
+                return false; // The data that follows cannot be told from a command: hang up.
+            }
+        } else {
+            // The whole size at once: a file that grows block by block is what makes a card slow.
+            reserve_started = Clock::now();
+            if (size > 0 && ftruncate(file, static_cast<off_t>(size)) != 0) {
+                const int error = errno;
+                close(file);
+                unlink(part.c_str());
+                file = -1;
+                if (size < kTooLarge || !parts.Plan(path, size, kPartSize)) {
+                    SendStatus(fd, error, "reserve space");
+                    return false;
+                }
+            }
+        }
+    }
+    if (parts.count != 0) {
+        const char* what = "";
+        if (const int error = parts.Reserve(what); error != 0) {
+            SendStatus(fd, error, what);
+            return false;
+        }
     }
     if (!SendStatus(fd, 0)) {
-        close(file);
-        unlink(part.c_str());
+        if (parts.count != 0) {
+            parts.Discard();
+        } else {
+            close(file);
+            unlink(part.c_str());
+        }
         return false;
     }
 
@@ -506,7 +679,7 @@ bool DoPut(int fd, const std::string& path, const std::string& shown) {
             const Clock::time_point t1 = Clock::now();
             crc = Crc(crc, block.data, block.size);
             const Clock::time_point t2 = Clock::now();
-            if (!WriteAll(file, block.data, block.size)) {
+            if (!(parts.count != 0 ? parts.Write(block.data, block.size) : WriteAll(file, block.data, block.size))) {
                 write_error = errno != 0 ? errno : EIO;
                 g_pipe.Abort();
                 return;
@@ -584,14 +757,22 @@ bool DoPut(int fd, const std::string& path, const std::string& shown) {
     writer.join();
     const bool failed = !network_ok || write_error != 0 || g_pipe.Aborted();
     const Clock::time_point close_started = Clock::now();
-    if (close(file) != 0 && write_error == 0 && !failed) {
+    if (parts.count != 0) {
+        if (const int error = parts.Close(); error != 0 && write_error == 0 && !failed) {
+            write_error = error;
+        }
+    } else if (close(file) != 0 && write_error == 0 && !failed) {
         write_error = errno != 0 ? errno : EIO;
     }
     const double close_s = Seconds(Clock::now() - close_started);
     g_busy = false;
 
     if (failed || write_error != 0) {
-        unlink(part.c_str());
+        if (parts.count != 0) {
+            parts.Discard();
+        } else {
+            unlink(part.c_str());
+        }
         if (write_error != 0) {
             Log("PUT %s: write failed (%s)", shown.c_str(), std::strerror(write_error));
             SendStatus(fd, write_error, "write");
@@ -600,12 +781,21 @@ bool DoPut(int fd, const std::string& path, const std::string& shown) {
         }
         return false;
     }
-    unlink(path.c_str());
-    if (rename(part.c_str(), path.c_str()) != 0) {
-        const int error = errno;
-        unlink(part.c_str());
-        Log("PUT %s: rename failed (%s)", shown.c_str(), std::strerror(error));
-        return SendStatus(fd, error, "rename");
+    if (parts.count != 0) {
+        if (const int error = parts.Commit(); error != 0) {
+            Log("PUT %s: rename failed (%s)", shown.c_str(), std::strerror(error));
+            return SendStatus(fd, error, "rename");
+        }
+        Log("PUT %s: written as %d parts of %llu bytes, %s.001 and on", shown.c_str(), parts.count,
+            static_cast<unsigned long long>(parts.part_size), shown.c_str());
+    } else {
+        unlink(path.c_str());
+        if (rename(part.c_str(), path.c_str()) != 0) {
+            const int error = errno;
+            unlink(part.c_str());
+            Log("PUT %s: rename failed (%s)", shown.c_str(), std::strerror(error));
+            return SendStatus(fd, error, "rename");
+        }
     }
     const double seconds = Seconds(Clock::now() - started);
     const double mib = size / 1048576.0;
@@ -833,6 +1023,9 @@ void ServerThread() {
             complained = false;
             Log("Listening on port %d (blocks of %d KB, a queue of %d, %s)", kPort, g_tuning.block_kb, g_tuning.queue,
                 g_tuning.kbps > 0 ? ("at most " + std::to_string(g_tuning.kbps) + " KB/s").c_str() : "no cap");
+            if (g_tuning.split_mb > 0) {
+                Log("Files over %d MB are written in parts of that size (menu.cfg's split)", g_tuning.split_mb);
+            }
         }
         pollfd waiting{listener, POLLIN, 0};
         const int ready = poll(&waiting, 1, 200);
@@ -882,6 +1075,7 @@ void Start(const Tuning& tuning) {
     g_tuning.queue = std::clamp(g_tuning.queue, 2, 64);
     g_tuning.kbps = std::max(0, g_tuning.kbps);
     g_tuning.rcvbuf_kb = std::clamp(g_tuning.rcvbuf_kb, 64, 2048);
+    g_tuning.split_mb = std::clamp(g_tuning.split_mb, 0, 4095); // (a part of 4 GB is no part at all)
     g_block = static_cast<std::size_t>(g_tuning.block_kb) * 1024;
     CrcInit();
     {

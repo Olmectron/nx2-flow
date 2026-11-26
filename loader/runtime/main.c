@@ -54,22 +54,33 @@ void __libnx_initheap(void) {
 #ifdef NX2_LOADER
         // (The game loader doesn't know its game yet, nor how large the game's modules are: they are read from the NUP file
         // once the program is up, game.c. Room is kept for them, for the table of the game's files, and for the files that are
-        // unpacked as they are read: 384 MB, or what "room=<MB>" says where the program was started with that.)
+        // unpacked as they are read: 1024 MB, or what "room=<MB>" says where the program was started with that.)
+        // (It was 384 MB, and a game of five modules with a film of 162 MB kept packed had no place to unpack it: reports,
+        // nx2-flow's issues 3 and 8. What a game turns out not to need of the room is given back once the game is opened,
+        // main() below, so a large guess costs the game nothing.)
+        // (The menu writes the word in quotes, "room=768", and only a space was taken before it: the figure set in the menu
+        // was never read. nx2-flow's pull request 10, whose finding and change this is, as is the heap's test below.)
         {
-            u64 room = 384;
+            u64 room = 1024;
             const char *said = envGetArgv();
             for (const char *c = said; c && *c; c++)
-                if (c[0] == 'r' && c[1] == 'o' && c[2] == 'o' && c[3] == 'm' && c[4] == '=' && (c == said || c[-1] == ' ')) {
+                if (c[0] == 'r' && c[1] == 'o' && c[2] == 'o' && c[3] == 'm' && c[4] == '=' && (c == said || c[-1] == ' ' || c[-1] == '"')) {
                     u64 mb = 0;
-                    for (const char *d = c + 5; *d >= '0' && *d <= '9'; d++) mb = mb * 10 + (u64)(*d - '0');
-                    if (mb >= 128 && mb <= 2048) room = mb;
+                    const char *d = c + 5;
+                    for (; *d >= '0' && *d <= '9'; d++) mb = mb * 10 + (u64)(*d - '0');
+                    if ((!*d || *d == ' ' || *d == '"') && mb >= 128 && mb <= 4096) room = mb;
                 }
             host += room << 20;
             loader_room = room << 20;
         }
 #endif
         u64 base = 0, end = 0;
-        if (addr && size > 4 * host && R_SUCCEEDED(svcGetInfo(&base, InfoType_HeapRegionAddress, CUR_PROCESS_HANDLE, 0))) {
+#ifdef NX2_LOADER  // (the loader's part is large while its game is unknown: twice it is enough to go on, as the test below has it)
+        const u64 enough = 2 * host;
+#else
+        const u64 enough = 4 * host;
+#endif
+        if (addr && size > enough && R_SUCCEEDED(svcGetInfo(&base, InfoType_HeapRegionAddress, CUR_PROCESS_HANDLE, 0))) {
             for (end = base;;) {  // where the heap ends now
                 MemoryInfo mi;
                 u32 pi;
@@ -201,6 +212,14 @@ int main(int argc, char **argv) {
             "Switch",
 #endif
             (u64)HOSVER_MAJOR(hos), (u64)HOSVER_MINOR(hos), (u64)HOSVER_MICRO(hos), (u64)appletGetAppletType(), total >> 20, used >> 20);
+#ifdef NX2_LOADER
+    // (The loader's games are Switch 2 games. Started over a Switch game, the program has that game's share of the memory, some
+    // 6900 MB where a Switch 2 game's is some 9100: a game that takes all it is told of then has nothing left to map and ends with
+    // a fault a little later, which says nothing of why. nx2-flow's issue 12. Said here, at the top, where a report is read first.)
+    if (total < (8000ull << 20))
+        nx2_log("[nx2] THE HOMEBREW MENU WAS STARTED OVER A TITLE THAT HAS %u MB OF MEMORY, as a Switch game has: a Switch 2 game's has some 9100 MB, "
+                "and this game may end for lack of the rest. Start the homebrew menu over a Switch 2 game\n", total >> 20);
+#endif
 
     // the game's heap: half of what's free, 1 GB at most, in 2 MB steps as the kernel gives it
     // (asked of malloc, not worked out from the kernel's count of free memory: the host library has taken all of it for its own heap
@@ -267,6 +286,11 @@ int main(int argc, char **argv) {
                             there < made_for ? ". THAT IS LESS: the game may end for lack of it. Started over a title that has as much, it would have it" : "");
                 }
             }
+#endif
+#ifdef NX2_GAME_NVDRV
+            // (a game of the older kind, tools/build.py: said at the start, where a report's reader looks first)
+            nx2_log("[nx2] this game is of the older kind: its program draws through the service \"nvdrv\", as a Switch game does. It runs only "
+                    "when the homebrew menu was started over a game of that same kind (the surest: this same game)\n");
 #endif
 #ifdef NX2_GAME_SYSRES_KB
             // The "system resource" of a program: memory the kernel keeps for the program's own bookkeeping, set by its description

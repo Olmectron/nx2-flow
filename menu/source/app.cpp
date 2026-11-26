@@ -31,24 +31,11 @@ enum SettingRow { kSetFolder, kSetShelf, kSetCovers, kSetCases, kSetTheme, kSetD
 
 // What the two advanced numbers may be (docs/layout.md), and the steps the pad takes.
 constexpr int kMemoryLow = 2048, kMemoryHigh = 8992, kMemoryStep = 128;
-constexpr int kRoomLow = 128, kRoomHigh = 2048, kRoomStep = 64, kRoomDefault = 384;
+constexpr int kRoomLow = 128, kRoomHigh = 2048, kRoomStep = 64, kRoomDefault = 1024;
 
 // The paces the receiver can be held to, KB a second (0: none). Any other number can be
 // written in menu.cfg by hand.
 constexpr int kCapChoices[] = {0, 512, 1024, 2048, 3072, 4096, 6144, 8192, 12288, 16384, 24576, 32768, 49152};
-
-bool EndsWithNup(const std::string& name) {
-    if (name.size() < 4) {
-        return false;
-    }
-    std::string tail = name.substr(name.size() - 4);
-    for (char& ch : tail) {
-        if (ch >= 'A' && ch <= 'Z') {
-            ch = static_cast<char>(ch - 'A' + 'a');
-        }
-    }
-    return tail == ".nup";
-}
 
 std::string LowerCase(std::string s) {
     for (char& ch : s) {
@@ -149,6 +136,8 @@ void App::LoadSettings() {
     transfer_block_kb = Number(Value(cfg, "transfer_block_kb"), 1024);
     transfer_queue = Number(Value(cfg, "transfer_queue"), 8);
     transfer_rcvbuf_kb = Number(Value(cfg, "transfer_rcvbuf_kb"), 256);
+    // (written by hand, to try a file in parts on a card that takes it whole: the menu never sets it)
+    transfer_split_mb = Number(Value(cfg, "split"), 0);
 }
 
 void App::SaveSettings() {
@@ -858,9 +847,9 @@ void App::OpenPicker() {
 }
 
 void App::PickerLook() {
-    std::vector<std::string> files;
-    picker_folders = ListFolders(picker_path, &files);
-    picker_nups = static_cast<int>(std::count_if(files.begin(), files.end(), EndsWithNup));
+    picker_folders = ListFolders(picker_path);
+    // (a game here may be a whole file, a file in parts, or a folder of parts)
+    picker_nups = CountGames(picker_path);
     picker_cursor = 0;
 }
 
@@ -914,6 +903,7 @@ void App::OpenTransfer() {
     tuning.queue = transfer_queue;
     tuning.kbps = transfer_kbps;
     tuning.rcvbuf_kb = transfer_rcvbuf_kb;
+    tuning.split_mb = transfer_split_mb;
     Transfer::Start(tuning);
     Platform::KeepAwake(true);
     transfer_files_before = Transfer::Look().files;
@@ -1093,7 +1083,8 @@ void App::DrawShelfScreen(Canvas& c) {
                 item.back_text.push_back("Saved data: " + (game.slot.empty() ? std::string{"default"} : game.slot));
             }
             item.back_text.push_back(game.file);
-            item.back_text.push_back(HumanSize(game.size));
+            // (a file cut in parts, for a card that takes none of 4 GB or more: the size is of them all)
+            item.back_text.push_back(HumanSize(game.size) + (game.parts.size() > 1 ? " in " + std::to_string(game.parts.size()) + " parts" : ""));
             if (!game.error.empty()) {
                 item.back_text.push_back("Can't be started: " + game.error);
             }
@@ -1407,7 +1398,7 @@ void App::DrawPicker(Canvas& c) {
     font.Draw(c, x + 28, y + 44, "Games folder", 24, kColText);
     const std::string here = picker_path.empty() ? "/" : picker_path;
     font.Draw(c, x + 28, y + 74, font.TruncateFront(here, 18, w - 56), 18, kColAccent);
-    const std::string found = std::to_string(picker_nups) + (picker_nups == 1 ? " NUP file here" : " NUP files here");
+    const std::string found = Count(static_cast<std::size_t>(picker_nups), "game here", "games here");
     font.Draw(c, x + w - 28 - font.Measure(found, 16), y + 44, found, 16, picker_nups ? kColText : kColTextDim);
     c.FillRect(x + 28, y + 90, w - 56, 1, kColLine);
 

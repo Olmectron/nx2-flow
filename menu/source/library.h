@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 // The card as the menu sees it: where things are (docs/layout.md), the two kinds of settings
-// file, and the list of games: one for each NUP container in the games folder.
+// file, and the list of games: one for each NUP container in the games folder and in the
+// folders inside it, whether the container is one file or was cut in parts (nup.h).
 
 #pragma once
 
@@ -43,10 +44,21 @@ Settings ReadSettings(const std::string& card_path);
 bool WriteSettings(const std::string& card_path, const Settings& values);
 
 struct Game {
-    std::string path;      // The container, as a path of the card.
+    /// One of the files the container is in.
+    struct Part {
+        std::string path; // As a path of the card.
+        std::uint64_t size{};
+    };
+
+    // The container, as a path of the card: what the game loader is given to run it, and what
+    // the game is known by here. A whole file; of a container cut in parts, the first part, or
+    // the folder when the parts have no name of their own ("00", "01": the folder is the game).
+    std::string path;
     std::string file;      // Its name alone.
-    std::uint64_t size{};
-    std::int64_t mtime{};
+    std::vector<Part> parts; // In their order; one for a whole file.
+    std::string own_folder; // The folder that was listed as this game (it holds its parts and no other game); else empty.
+    std::uint64_t size{};  // Of all the parts.
+    std::int64_t mtime{};  // Of the part written last.
     std::uint64_t title_id{};
     std::string id;        // The title id, 16 hex digits, lower case: the game's folder's name.
     std::string title;
@@ -65,10 +77,17 @@ struct Game {
     }
 };
 
-/// The games of a folder, by title. What was read of each container is kept in a small file
-/// under kCache, by the container's name, size and time: a library opens without reading the
-/// containers again.
+/// The games of a folder and of the folders in it (a few levels down), by title. What was read
+/// of each container is kept in a small file under kCache, by the container's name, size and
+/// time: a library opens without reading the containers again.
 std::vector<Game> ScanGames(const std::string& games_folder);
+/// How many games are in a folder itself, not looking into the folders in it that aren't one.
+int CountGames(const std::string& card_path);
+
+/// A game's container deleted from the card: every part of it, and the folder that was the
+/// game if nothing else is left in it. Its saved data and settings stay. False when a file
+/// couldn't be deleted.
+bool RemoveGame(const Game& game);
 
 /// Decodes a game's icon if it hasn't been yet (from kCache/<id>.jpg). At most `budget` a call.
 void LoadIcon(Game& game, int& budget);

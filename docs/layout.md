@@ -41,6 +41,7 @@ Two homebrew programs for a Switch 2, both in one folder of the card so that the
 | `transfer_block_kb` | the receiver's one write to the card, in KB (64 to 4096; 1024 when absent) |
 | `transfer_queue` | how many such blocks may wait for the card before the network is held back (2 to 64; 8 when absent) |
 | `transfer_rcvbuf_kb` | the receiving socket's own buffer, in KB (64 to 2048; 256 when absent) |
+| `split` | MB: a file the receiver is sent that is larger than this is written in parts of this size (`Name.001`, `Name.002`, ...). Absent: a file is written whole, and in parts of just under 4 GB only where the card can't take it whole |
 
 The loader reads none of these: they are the menu's.
 
@@ -53,7 +54,7 @@ Written by the menu, read by the loader. A key that is absent or empty means the
 | `modset` | the folder under `modsets/` to lay over the game | `mods/` |
 | `save` | the slot of saved data to use: the name of a folder under `saves/` | `save/` (the slot "default") |
 | `memory` | MB the game is told of (2048 to 8992). **Advanced** | decided by the loader |
-| `room` | MB the loader keeps for itself (128 to 2048). **Advanced** | 384 |
+| `room` | MB the loader keeps for itself while it opens the game (128 to 2048); what the game turns out not to need of it is given back to the game. **Advanced** | 1024 |
 | `modules` | `whole`: no module is merged with another; `merge`: all that may be are. **Advanced**, by hand: the menu has no row for it | merged only when the game needs the places |
 
 The advanced ones are shown behind a warning: a wrong value keeps a game from starting. Removing the key puts it right again.
@@ -74,6 +75,32 @@ argv[2..] menu=sdmc:/switch/nx2-flow/nx2-flow.nro      (optional: what to start 
 ```
 
 Everything else the loader needs it reads from the NUP file and from the game's folder.
+
+## A NUP file in parts
+
+For a card that takes no file of 4 GB (FAT32) a NUP file may be kept cut in parts, made with any tool that cuts a file in
+pieces. `loader/runtime/nupparts.h` is the one place that says which names are one game's parts; the loader and the menu both
+use it.
+
+```
+Game.nup.001  Game.nup.002           a number as the last ending (from 0 or 1; any number of digits up to four)
+Game.nup.part1  Game.nup.part2       "part" and a number
+Game.nup.aa  Game.nup.ab             letters, after ".nup" only
+Game.nu0  Game.nu1                   the ending's last letter made a number
+Game.part1.nup  Game.001.nup         the number before the ending
+<folder>/00  <folder>/01             nameless parts: the folder is the game, and may hold other files beside them
+```
+
+- One game's parts share the name and the way they are numbered, follow one another from 0 or 1 with none missing, and are at
+  least two (a folder of nameless parts may hold one). A name that looks like a part and has no such company is a file of its
+  own if it ends `.nup`, and nothing otherwise.
+- The parts are the whole file's bytes in order; they may be of any sizes.
+- `argv[1]` for a game in parts is its first part (`sdmc:/nx2-flow/games/Game.nup.001`) or, for nameless parts, the folder.
+  The loader finds the rest beside it.
+- The menu looks into the folders of the games folder: a folder that holds one game's parts and no other game's file is that
+  game; any other folder's files are listed as the games they are.
+- A folder that the console itself takes for one file (the archive attribute set, as its own tools make them for a file of
+  4 GB on such a card) is opened as that file: it needs none of this.
 
 ## Receiving files from a computer
 

@@ -6,7 +6,9 @@
 #   make preview         a PC program that renders the menu's screens from a pretend card, and
 #                        the pictures themselves in out/preview/ (needs a PC g++ and Python + Pillow)
 #   make nettest         a PC program that runs the file receiver with a folder for a card, to
-#                        try it against a sender with no console
+#                        try it against a sender with no console, or against itself
+#   make partstest       a PC program that checks how games kept in parts are listed and read
+#                        (tools/test_parts.sh builds both, makes their pretend cards and runs them)
 #   make font            source/font_baked.h again (tools/bake_font.py)
 #   make clean
 
@@ -15,10 +17,12 @@ $(error "Please set DEVKITPRO in your environment. export DEVKITPRO=<path to>/de
 endif
 
 TARGET   := nx2-flow
-VERSION  := 0.2.2
+VERSION  := 0.2.3
 OUT      := out
 SOURCES  := app covers images library nup transfer main_switch
-HEADERS  := $(wildcard source/*.h)
+# The rules for a NUP file kept in parts are the game loader's own header: one place for both.
+PARTS    := ../loader/runtime
+HEADERS  := $(wildcard source/*.h) $(PARTS)/nupparts.h
 
 include $(DEVKITPRO)/libounce/switch2_rules
 ARCH     := $(SWITCH2_CPU) -mtp=soft -fPIE
@@ -26,7 +30,7 @@ DEFINES  := -D__SWITCH__ -D__SWITCH2__
 LIBDIRS  := $(PORTLIBS) $(LIBNX) $(DEVKITPRO)/portlibs/switch
 LIBS     := -lnx
 
-INCLUDES := $(foreach dir,$(LIBDIRS),-I$(dir)/include) -Isource
+INCLUDES := $(foreach dir,$(LIBDIRS),-I$(dir)/include) -Isource -I$(PARTS)
 LIBPATHS := $(foreach dir,$(LIBDIRS),-L$(dir)/lib)
 CXXFLAGS := -g -O2 -Wall -ffunction-sections $(ARCH) $(DEFINES) $(INCLUDES) -std=gnu++20 -fno-rtti -fno-exceptions
 LDFLAGS  := -specs=$(LIBNX)/switch.specs -g $(ARCH) -Wl,-Map,$(OUT)/$(TARGET).map
@@ -37,7 +41,7 @@ OBJECTS  := $(foreach s,$(SOURCES),$(OUT)/$(s).o)
 HOSTCXX  ?= g++
 PYTHON   ?= python
 
-.PHONY: all clean preview nettest font
+.PHONY: all clean preview nettest partstest font
 all: $(OUT)/$(TARGET).nro
 
 $(OUT):
@@ -59,7 +63,7 @@ PREVIEW_SOURCES := preview/main.cpp source/app.cpp source/covers.cpp source/imag
 
 $(OUT)/preview/preview$(EXE): $(PREVIEW_SOURCES) $(HEADERS)
 	mkdir -p $(OUT)/preview
-	$(HOSTCXX) -std=gnu++20 -O2 -Wall -Isource $(PREVIEW_SOURCES) -o $@
+	$(HOSTCXX) -std=gnu++20 -O2 -Wall -Isource -I$(PARTS) $(PREVIEW_SOURCES) -o $@
 
 preview: $(OUT)/preview/preview$(EXE)
 	rm -rf $(OUT)/preview/card $(OUT)/preview/*.ppm $(OUT)/preview/*.png
@@ -70,7 +74,12 @@ preview: $(OUT)/preview/preview$(EXE)
 # The file receiver itself, as it runs on the console, with a folder for a card.
 nettest:
 	mkdir -p $(OUT)/preview
-	$(HOSTCXX) -std=gnu++20 -O2 -Wall -Isource preview/transfer_test.cpp source/transfer.cpp source/library.cpp source/nup.cpp source/images.cpp -o $(OUT)/preview/transfer_test$(EXE)
+	$(HOSTCXX) -std=gnu++20 -O2 -Wall -Isource -I$(PARTS) preview/transfer_test.cpp source/transfer.cpp source/library.cpp source/nup.cpp source/images.cpp -o $(OUT)/preview/transfer_test$(EXE)
+
+# The library's list of a pretend card with games in parts (tools/make_parts_card.py), checked.
+partstest:
+	mkdir -p $(OUT)/preview
+	$(HOSTCXX) -std=gnu++20 -O2 -Wall -Isource -I$(PARTS) preview/parts_test.cpp source/library.cpp source/nup.cpp source/images.cpp -o $(OUT)/preview/parts_test$(EXE)
 
 font:
 	$(PYTHON) tools/bake_font.py

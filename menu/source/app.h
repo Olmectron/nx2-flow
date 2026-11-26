@@ -14,7 +14,7 @@
 
 namespace Flow {
 
-inline constexpr const char* kVersion = "0.2.2";
+inline constexpr const char* kVersion = "0.2.3";
 
 /// What was pressed since the last frame (a direction held repeats: the caller sees to it).
 struct Input {
@@ -27,7 +27,7 @@ struct Input {
 /// What the menu asks of its caller after a frame.
 struct Request {
     enum class Kind { None, Exit, Launch } kind{Kind::None};
-    std::string nup;  // Launch: the container, as a path of the card.
+    std::string nup;  // Launch: the container, as a path of the card (Game::path: of one in parts, the first part or their folder).
     std::string room; // Launch: game.cfg's "room" (MB), which the loader is told as an argument; empty when unset.
 };
 
@@ -130,6 +130,7 @@ private:
     int transfer_block_kb{1024};
     int transfer_queue{8};
     int transfer_rcvbuf_kb{256};
+    int transfer_split_mb{}; // menu.cfg's "split": files over this many MB are received in parts; 0: only when the card needs it.
     bool settings_changed{};
 
     // The shelf.
@@ -161,7 +162,7 @@ private:
     int settings_cursor{};
     std::string picker_path;
     std::vector<std::string> picker_folders;
-    int picker_nups{};
+    int picker_nups{}; // The games in the folder shown.
     int picker_cursor{};
 
     // Files from a computer.

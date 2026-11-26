@@ -17,6 +17,12 @@
 //     then: a pace it always keeps is quicker than one it chokes on.
 // Each file's log line says what there is to tune by: seconds, MB a second, the longest time
 // with nothing written, and how full the queue got.
+//
+// A card of the FAT32 kind takes no file of 4 GB or more. When a file that large can't be made
+// whole, it is written as parts instead, "Game.nup.001", "Game.nup.002", ... of 4,294,901,760
+// bytes each: what cutting it on the computer would have put there, which the menu lists as one
+// game and the loader reads as the one file (loader/runtime/nupparts.h). A card that takes the
+// whole file gets the whole file, as ever.
 
 #pragma once
 
@@ -35,6 +41,10 @@ struct Tuning {
     int queue{8};        // Blocks between the network and the card: 2 to 64.
     int kbps{0};         // The most taken from the network, KB a second; 0: no cap.
     int rcvbuf_kb{256};  // The socket's own buffer: 64 to 2048.
+    // menu.cfg's "split": every file larger than this many MB is written in parts of that size,
+    // whatever the card takes (for trying the parts on a card that needs none). 0: a file is
+    // written in parts only when it is 4 GB or more and the card won't have it whole.
+    int split_mb{0};
 };
 
 struct State {

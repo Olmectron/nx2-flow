@@ -1070,7 +1070,7 @@ int nx2_svc(u64 *r, u32 n) {
         }
         {
             const u32 given = r[1] && r[2] == 4 ? *(const u32 *)r[1] : 0;
-            static char why[420];
+            static char why[640];
             if (given == 0x1015 && refused_service[0]) {
                 // (put together by hand: this runs as the game's thread, where the C library isn't to be used)
                 const char *parts[3] = {"the game's SDK ended the program: the console refuses the service \"", refused_service,
@@ -1086,9 +1086,16 @@ int nx2_svc(u64 *r, u32 n) {
                           "corrupted\" kind). Install the port again, the game's files with it, and see that the card has room for them");
             else if (refused_service[0] && never_stood(refused_service)) {
                 // (a service of the kind the port can't stand in for was refused earlier: said with the end, as what may be behind it)
+                // ("nvdrv": a game of the older kind, which draws as a Switch game does. Its own words, since it is the commonest.)
+                const int older = refused_service[0] == 'n' && refused_service[1] == 'v' && refused_service[2] == 'd' && refused_service[3] == 'r' &&
+                                  refused_service[4] == 'v' && !refused_service[5];
                 const char *parts[3] = {"the game's SDK ended the program itself (an abort). Before it, the console refused the service \"", refused_service,
-                                        "\" to the game the homebrew menu was started over, and the port can't stand in for that one (graphics, display, "
-                                        "controllers, files): if this game needs it, start the homebrew menu over another game, one of the same kind"};
+                                        older ? "\" to the game the homebrew menu was started over. This game is of the older kind: its program draws "
+                                                "through that service, as a Switch game does, and nothing in a port can give it. It runs only when the "
+                                                "homebrew menu is started over a game of that same kind: the surest is this same game (hold R as it starts)"
+                                              : "\" to the game the homebrew menu was started over, and the port can't stand in for that one (graphics, "
+                                                "display, controllers, files): if this game needs it, start the homebrew menu over another game, one of the "
+                                                "same kind"};
                 u32 n = 0;
                 for (int k = 0; k < 3; k++)
                     for (const char *c = parts[k]; *c && n + 1 < sizeof why; c++) why[n++] = *c;

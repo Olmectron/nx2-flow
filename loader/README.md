@@ -45,6 +45,13 @@ python tools/build_loader.py          # out/nx2-game.nro
 Started with no file named, the loader runs the NUP file that `/nx2-flow/next.txt` names (one line, a path of the card:
 `sdmc:/nx2-flow/games/Some Game.nup`).
 
+## A NUP file in parts
+
+For a card that takes no file of 4 GB, a NUP file may be kept cut in parts (`Game.nup.001`, `Game.nup.aa`, a folder with
+`00`, `01`, ...). `runtime/nupparts.h` says which names are one game's parts, for this loader and for the menu alike; the loader
+is given the first part, or the folder of nameless parts, and reads them as the one file they were. The list of names is in
+`docs/layout.md`.
+
 ## License
 
 MIT (see `LICENSE`). `third_party/zstd` is Zstandard's decoder, under its own license (BSD), in that folder.

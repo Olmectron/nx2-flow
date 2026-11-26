@@ -21,6 +21,7 @@
 #include <zstd.h>  // (third_party/zstd: Zstandard's own decoder)
 
 #include "nx2.h"
+#include "nupparts.h"  // (a NUP file kept in parts, for a card that takes no file of 4 GB)
 void nx2_log(const char *fmt, ...);
 void nx2_log_flush(void);
 s64 nx2_zbic_to_zstd(const u8 *data, u64 size, u8 *out, u64 room);  // zbic.c
@@ -63,7 +64,13 @@ static void w64(u8 *p, u64 v) { w32(p, (u32)v), w32(p + 4, (u32)(v >> 32)); }
 
 // ---------------------------------------------------------------- the NUP file
 static struct {
-    FsFile file;
+    // (the file's parts, in their order, each open: one for a whole file. A read may begin in one and end in the next.)
+    struct {
+        FsFile file;
+        u64 size;
+    } parts[NUP_PARTS_MAX];
+    u32 nparts;
+    u64 size;
     u8 *toc;
     u64 toc_size, ndirs, nfiles, children_at, pool_size;
     u32 npackages;
@@ -73,13 +80,19 @@ static struct {
 // so many of the file's bytes, from a place in it: 0, or the file system's word for what went wrong
 static u32 nup_read(u64 at, void *to, u64 size) {
     u8 *out = to;
+    u32 k = 0;
+    u64 in = at;  // (the part the place is in, and the place in that part)
+    while (k < nup.nparts && in >= nup.parts[k].size) in -= nup.parts[k++].size;
     while (size) {
-        const u64 take = size < (4u << 20) ? size : 4u << 20;
-        u64 got = 0;
-        const u32 rc = fsFileRead(&nup.file, (s64)at, out, take, FsReadOption_None, &got);
+        if (k >= nup.nparts) return 0x2EE202;
+        const u64 left = nup.parts[k].size - in;
+        u64 take = size < (4u << 20) ? size : 4u << 20, got = 0;
+        if (take > left) take = left;
+        const u32 rc = fsFileRead(&nup.parts[k].file, (s64)in, out, take, FsReadOption_None, &got);
         if (rc) return rc;
         if (got != take) return 0x2EE202;
-        at += take, out += take, size -= take;
+        in += take, out += take, size -= take;
+        if (in == nup.parts[k].size) k++, in = 0;
     }
     return 0;
 }
@@ -122,11 +135,30 @@ static s64 nup_find(u32 dir, const char *name) {
 static int nup_open(const char *path) {
     FsFileSystem *sd = fsdevGetDeviceFileSystem("sdmc");
     static char inner[FS_MAX_PATH];
-    const char *colon = strchr(path, ':');
-    strncpy(inner, colon ? colon + 1 : path, sizeof inner - 1);
-    if (!sd || fsFsOpenFile(sd, inner, FsOpenMode_Read, &nup.file)) {
-        nx2_log("[game] %s can't be opened\n", path);
-        return -1;
+    // The file may be kept in parts (nupparts.h says which names are one game's): what is named is the whole file, the first
+    // part, or a folder that holds the parts. (A folder the console itself takes for one file, as the ones it makes for a file
+    // of 4 GB on such a card, is opened as the file it is: nothing is found to be in parts then.)
+    static NupPart found[NUP_PARTS_MAX];
+    int count = nup_parts_find(path, found, NUP_PARTS_MAX);
+    if (count < 1) count = 1, snprintf(found[0].path, sizeof found[0].path, "%s", path);
+    nup.nparts = 0, nup.size = 0;
+    for (int k = 0; k < count; k++) {
+        const char *colon = strchr(found[k].path, ':');
+        s64 size = 0;
+        const int fits = snprintf(inner, sizeof inner, "%s", colon ? colon + 1 : found[k].path) < (int)sizeof inner;
+        if (!fits || !sd || fsFsOpenFile(sd, inner, FsOpenMode_Read, &nup.parts[k].file)) {
+            nx2_log("[game] %s can't be opened\n", found[k].path);
+            return -1;
+        }
+        fsFileGetSize(&nup.parts[k].file, &size);
+        nup.parts[k].size = (u64)size, nup.size += (u64)size, nup.nparts++;
+    }
+    if (count > 1) {
+        nx2_log("[game] the NUP file is kept in %u parts, %u MB together: %s the first, %s the last\n", (u64)count, nup.size >> 20, found[0].path, found[count - 1].path);
+        for (int k = 1; k + 1 < count; k++)
+            if (nup.parts[k].size != nup.parts[0].size)
+                nx2_log("[game]   part %u is %u bytes where the first is %u: parts of one cut are all of a size but the last\n", (u64)k + 1, nup.parts[k].size,
+                        nup.parts[0].size);
     }
     u8 head[0x80];
     if (nup_read(0, head, sizeof head) || memcmp(head, "NUP\x01", 4)) {
@@ -135,6 +167,13 @@ static int nup_open(const char *path) {
     }
     const u64 toc_at = r64(head + 8);
     nup.toc_size = r64(head + 16), nup.npackages = r32(head + 0x48);
+    // (a part missing, or a copy cut short: said here, where it is known, and not as a file that can't be read later)
+    if (toc_at + nup.toc_size > nup.size) {
+        nx2_log("[game] %s is not all there: its table of contents ends at %u MB and the file%s is %u MB. %s\n", path, (toc_at + nup.toc_size) >> 20,
+                nup.nparts > 1 ? ", all its parts together," : "", nup.size >> 20,
+                nup.nparts > 1 ? "A part is missing or wasn't copied whole" : "It wasn't copied whole, or it is the first part of a file kept in parts and the others aren't beside it");
+        return -1;
+    }
     if (nup.toc_size < 0x30 || nup.toc_size > (512u << 20) || !(nup.toc = nx2_big_alloc(nup.toc_size, 1)) || nup_read(toc_at, nup.toc, nup.toc_size) ||
         memcmp(nup.toc, "TOC\x01", 4)) {
         nx2_log("[game] its table of contents (%u KB) can't be read\n", nup.toc_size >> 10);
@@ -151,6 +190,19 @@ static int nup_open(const char *path) {
     nup.pool = nup.toc + pool_at;
     if (n != nup.npackages || nup.children_at > nup.toc_size || pool_at + nup.pool_size > nup.toc_size) {
         nx2_log("[game] its table of contents doesn't hold together (%u packages, %u folders, %u files)\n", (u64)n, nup.ndirs, nup.nfiles);
+        return -1;
+    }
+    // (the table may be at the file's start, and a part missing from its end: the furthest byte any of its files has says so)
+    u64 furthest = 0;
+    for (u64 k = 0; k < nup.nfiles; k++) {
+        const NupFile f = nup_file(k);
+        const u64 end = f.at + f.kept;
+        if (end > furthest) furthest = end;
+    }
+    if (furthest > nup.size) {
+        nx2_log("[game] %s is not all there: its files reach %u MB into it and the file%s is %u MB. %s\n", path, furthest >> 20,
+                nup.nparts > 1 ? ", all its parts together," : "", nup.size >> 20,
+                nup.nparts > 1 ? "A part is missing or wasn't copied whole" : "It wasn't copied whole, or it is the first part of a file kept in parts and the others aren't beside it");
         return -1;
     }
     return 0;
@@ -1095,7 +1147,7 @@ static void read_test(void) {
     const int two = other[0] && R_SUCCEEDED(fsFsOpenFile(fsdevGetDeviceFileSystem("sdmc"), other, FsOpenMode_Read, &second));
     static const u64 sizes[3] = {64u << 10, 256u << 10, 900u << 10};
     for (int f = 0; f < (two ? 2 : 1); f++) {
-        FsFile *file = f ? &second : &nup.file;
+        FsFile *file = f ? &second : &nup.parts[0].file;
         s64 size = 0;
         fsFileGetSize(file, &size);
         for (int far = 1; far >= 0; far--)
@@ -1130,11 +1182,14 @@ u64 nx2_game_room_end(void) {
             packed++, all += rom.files[k].size;
             if (rom.files[k].size > largest) largest = rom.files[k].size;
         }
-    // The files unpacked as they are read: the room they are kept in and the largest of them besides, or all of them where
-    // that is less; and 16 MB over, for their being whole pages each. A game with none packed: 4 MB, for what isn't foreseen.
+    // The files unpacked as they are read: the room they are kept in, or the largest of them and 64 MB where that is more
+    // (the others are let go for it, but one being read meanwhile can't be), or all of them where that is less; and 16 MB over,
+    // for their being whole pages each. A game with none packed: 4 MB, for what isn't foreseen.
+    // (It was the room and the largest besides: with the loader's own part a guess of 1024 MB now, that kept 126 MB more from a
+    // game than the 384 MB there were before did.)
     u64 cache = 4u << 20;
     if (packed) {
-        cache = unpacked_room + largest;
+        cache = unpacked_room > largest + (64u << 20) ? unpacked_room : largest + (64u << 20);
         if (cache > all) cache = all;
         cache += 16u << 20;
     }

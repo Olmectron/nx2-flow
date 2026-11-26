@@ -8,10 +8,16 @@ out. It is under the **GNU General Public License, version 2 or later**, as toro
 
 ## What it does
 
-- **Lists the games**: every `*.nup` in the games folder (`/nx2-flow/games`, or the folder chosen in Settings). Of each file it
-  reads only the superblock, the packages and their facts (title id, title, publisher, version, icon): a few kilobytes,
-  whatever the file's size. What it read is kept in `/nx2-flow/cache/`, by the file's name, size and time, so a library opens
-  without reading the files again.
+- **Lists the games**: every `*.nup` in the games folder (`/nx2-flow/games`, or the folder chosen in Settings) and in the
+  folders inside it, three levels down. Of each file it reads only the superblock, the packages and their facts (title id,
+  title, publisher, version, icon): a few kilobytes, whatever the file's size. What it read is kept in `/nx2-flow/cache/`, by
+  the file's name, size and time, so a library opens without reading the files again.
+- **A NUP file cut in parts** (a FAT32 card takes no file of 4 GB or more) is one game on the shelf: `Game.nup.001`,
+  `Game.nup.002`, ...; `Game.nup.aa`, `.ab`; a folder of `00`, `01`, ...; and the other ways `../loader/runtime/nupparts.h`
+  knows, which is the one place those rules are written, for the loader and the menu both. The parts are read as the one file
+  they were, the size shown is of them all, and the loader is given the first part (or the folder, when the parts have no name
+  of their own). Files that only look like parts (`x.001`, `x.002`; a folder of `0`, `1`) and aren't called `.nup` are listed
+  only when they are a NUP file.
 - **Shows them as cases on a shelf**, in nine ways (`L` / `R`): a game's cover from `/nx2-flow/covers` when there is one, and
   otherwise a case made of the icon the NUP file has and the game's name.
 - **A game's options** (`Y`):
@@ -75,6 +81,18 @@ In the previews the receiver of files is a stand-in that says what a scene needs
 make nettest            out/preview/transfer_test
 ```
 
+Two tests run on a PC and say whether they held (`sh tools/test_parts.sh` builds and runs both):
+
+```
+make partstest          out/preview/parts_test <card>              (the card: tools/make_parts_card.py)
+make nettest            out/preview/transfer_test <card> split
+```
+
+The first lists a pretend card that has the same game whole and cut in parts in every way (the cuts fall inside the
+superblock, the table of contents and the icon), beside files that must not be listed, and checks each game's path, parts,
+title id, title, size and icon. The second sends files to the receiver from the same program (it opens port 28302 on the PC
+for a moment), with `split=1`, and compares what is on the card with what was sent.
+
 ## Files from a computer
 
 The screen shows the console's address and listens on port 28302 with Toronja Transfer's protocol ("TTX1": PING, LIST, PUT, GET,
@@ -98,6 +116,12 @@ The four numbers are keys of `/nx2-flow/menu.cfg`, always written there so that 
 | `transfer_queue` | blocks that may wait for the card before the network is held back (2 to 64) | 8 |
 | `transfer_kbps` | the most taken from the network, KB a second; 0: no limit. Also in Settings, "Most the receiver takes" | 0 |
 | `transfer_rcvbuf_kb` | the receiving socket's own buffer, in KB (64 to 2048) | 256 |
+
+**A file of 4 GB or more on a FAT32 card.** Such a card refuses the file when it is made or given its size. The receiver then
+writes it as parts, `<name>.001`, `<name>.002`, ... of 4,294,901,760 bytes each (under `<name>.001.ttpart`, ... until all
+have arrived), which the menu lists as one game. A card that takes the whole file gets the whole file, as before. To try the
+parts on such a card, `menu.cfg` takes a key the menu never writes: `split=<MB>` has every file larger than that many MB
+written in parts of that size (at most 64 parts: a file that would need more is written whole).
 
 Every file of 8 MB or more leaves its figures in `/nx2-flow/transfer.log`: seconds, MB a second, **the longest time with nothing
 written** and when it was, **how full the queue got**, how many writes took 100 ms, 500 ms, 2 s or more, the slowest write, and
@@ -141,7 +165,7 @@ that ties the two was found. So nothing is guessed: a game gets covers from Game
 |---|---|
 | `source/app.cpp`, `app.h` | the menu: the shelf, a game's options, its slots and advanced options, the settings, the folder picker, the file receiver's screen |
 | `source/library.cpp`, `library.h` | the card's layout, the two settings files, the list of games and its cache, slots of saved data |
-| `source/nup.cpp`, `nup.h` | what the menu reads of a NUP file |
+| `source/nup.cpp`, `nup.h` | what the menu reads of a NUP file, whole or in parts (the rules for parts: `../loader/runtime/nupparts.h`) |
 | `source/covers.cpp`, `covers.h` | cover files, `ids.txt`, the download |
 | `source/transfer.cpp`, `transfer.h` | files from a computer: Toronja Transfer's protocol, received through a queue |
 | `source/images.cpp`, `stb_image.h` | JPEG and PNG, decoded and made smaller |
@@ -149,7 +173,8 @@ that ties the two was found. So nothing is guessed: a game gets covers from Game
 | `source/font_baked.h` | the font, as glyph pictures (Aileron Regular, CC0) |
 | `source/main_switch.cpp` | the console: the framebuffer, the pad, the network, the keyboard, handing over to the game loader |
 | `preview/main.cpp` | the same menu on a PC, rendered to pictures |
-| `preview/transfer_test.cpp` | the file receiver on a PC, with a folder for a card |
+| `preview/transfer_test.cpp` | the file receiver on a PC, with a folder for a card; and its test against a sender of its own |
+| `preview/parts_test.cpp` | the test of games kept in parts, on a PC |
 | `tools/` | the font, the pretend card, the previews, the covers script |
 
 ## Not tried on a console
@@ -171,5 +196,8 @@ program that sends to Toronja Transfer). Still to be seen on the console itself:
   card, whether the longest time with nothing written stays short, and which of the four numbers suit the card. The socket's
   buffer sizes are asked of the system and may be refused (the defaults are then used). The menu's own thread comes before the
   two that move a file, so the screen is redrawn only a few times a second meanwhile.
+- **A game in parts**: listing and reading the parts were checked on a PC (`tools/test_parts.sh`). On the console: that a
+  FAT32 card does refuse a file of 4 GB when the receiver makes it or gives it its size (that refusal is what turns the
+  receiver to parts), the time making every part at its whole size takes, and the loader started with a first part or a folder.
 - **Text**: the font has the Latin letters without accents (an accented letter is drawn as its plain one); a title in another
   script shows no text of its own, only its icon.

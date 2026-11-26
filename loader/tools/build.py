@@ -56,6 +56,24 @@ def build_guest(work):
     return out
 
 
+def services_asked(npdm):
+    """The system services a program's own description (main.npdm) lets it open."""
+    try:
+        d = open(npdm, 'rb').read()
+        base = int.from_bytes(d[0x70:0x74], 'little')  # (the ACI0 part)
+        if d[:4] != b'META' or d[base:base + 4] != b'ACI0':
+            return []
+        at = base + int.from_bytes(d[base + 0x28:base + 0x2C], 'little')
+        end, names = at + int.from_bytes(d[base + 0x2C:base + 0x30], 'little'), []
+        while at < end and at < len(d):
+            n = (d[at] & 7) + 1
+            names.append(d[at + 1:at + 1 + n].decode('latin1'))
+            at += 1 + n
+        return names
+    except (OSError, ValueError):
+        return []
+
+
 def modules_in(exefs):
     """The game's modules in load order. rtld is left out: runtime/loader.c does its work."""
     names = ['main'] + [f'subsdk{k}' for k in range(10)] + ['sdk']
@@ -116,6 +134,15 @@ def build(exefs, name, target, work, out_dir, shown=None):
             if 0 < remote <= 4096:
                 print(f'{name}: made for {remote} MB of memory for graphics and {system >> 10} MB of system resource. A port has those from '
                       'the game the homebrew menu is started over: the game itself is the surest choice (the log says what it had)')
+            # (A game of the older kind: its program draws through the service "nvdrv", as a Switch game's does, and its own
+            # description asks for that one. Some games sold for this console are such: one program for both consoles, made with
+            # the older SDK, that asks whether it runs on the newer one. A program started over a game of the newer kind is
+            # refused "nvdrv", and nothing in a port can give it: said here, and by the port at its start.)
+            if 'nvdrv' in services_asked(described):
+                extra.append('-DNX2_GAME_NVDRV=1')
+                print(f'{name}: THIS GAME IS OF THE OLDER KIND: its program draws through the system service "nvdrv", as a Switch game does. '
+                      'Its port runs only when the homebrew menu is started over a game of that same kind, and the surest is this same '
+                      'game. Started over another, it ends as it starts its graphics.')
         changed = False
         for x in extra:  # (given on the command line: kept with the port, for the next time it is built)
             if x.startswith('-DNX2_GAME_MB=') and info.get('heap') != int(x[14:]):

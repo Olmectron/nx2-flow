@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <set>
 
 #include <dirent.h>
 #include <sys/stat.h>
@@ -25,11 +26,6 @@ std::string Lower(std::string s) {
         }
     }
     return s;
-}
-
-bool EndsWith(const std::string& s, const char* tail) {
-    const std::size_t n = std::strlen(tail);
-    return s.size() >= n && Lower(s.substr(s.size() - n)) == tail;
 }
 
 std::string Trim(std::string s) {
@@ -185,10 +181,101 @@ std::string HumanSize(std::uint64_t bytes) {
     return text;
 }
 
+namespace {
+
+// How far below the games folder a game is looked for: a folder of games in it, a folder in
+// that one. Not further: the folder chosen may be a large part of the card.
+constexpr int kDeepest = 3;
+
+/// A container as it was found, with nothing of it read yet.
+struct Find {
+    Nup::Found found;
+    std::string own_folder; // The folder that was listed as this game, as a path of the card.
+};
+
+/// The containers in a folder and, `deeper` levels down, in the folders in it that aren't one
+/// themselves. What a container is, whole or in parts, is for Nup::Entry to say.
+/// taken: the files of the containers found until now (a part is listed once, with its first).
+void FindGames(const std::string& folder, int deeper, bool nameless_asked, std::vector<Find>& out, std::set<std::string>& taken) {
+    std::vector<std::string> files;
+    const std::vector<std::string> folders = ListFolders(folder, &files);
+    const std::string dir = OnCard(folder);
+    const auto take = [&](Find& one) {
+        if (taken.count(one.found.parts[0].path) != 0) {
+            return;
+        }
+        for (const Nup::Part& part : one.found.parts) {
+            taken.insert(part.path);
+        }
+        out.push_back(std::move(one));
+    };
+    for (const std::string& file : files) {
+        // Every nameless file of a folder ("00", "01") is the same question, whether this folder
+        // is a game's parts: asked once, and not at all in a folder that was found not to be
+        // one on the way here. Such a folder may hold thousands of them.
+        const bool nameless = Nup::NamelessPart(file);
+        if ((nameless && nameless_asked) || taken.count(dir + "/" + file) != 0) {
+            continue;
+        }
+        nameless_asked = nameless_asked || nameless;
+        Find one;
+        if (Nup::Entry(dir, file, false, one.found) > 0) {
+            take(one);
+        }
+    }
+    for (const std::string& name : folders) {
+        const std::string inside = (folder == "/" ? std::string{} : folder) + "/" + name;
+        if (name[0] == '.' || inside == kCovers || inside == kCache) {
+            continue; // (hidden, or the menu's own pictures: no game is there)
+        }
+        Find one;
+        const int n = Nup::Entry(dir, name, true, one.found);
+        if (n > 0) {
+            one.own_folder = inside;
+            take(one);
+        } else if (n < 0 && deeper > 0) {
+            FindGames(inside, deeper - 1, true, out, taken);
+        }
+    }
+}
+
+/// A path as the C library takes it, as a path of the card.
+std::string CardPath(const std::string& path) {
+    return path.substr(g_root.size());
+}
+
+} // namespace
+
+int CountGames(const std::string& card_path) {
+    std::vector<Find> finds;
+    std::set<std::string> taken;
+    FindGames(card_path.empty() ? "/" : card_path, 0, false, finds, taken);
+    int count = 0;
+    for (const Find& find : finds) {
+        // (as ScanGames has it: files that only look like parts count when they are a container)
+        Nup::Info info;
+        std::string error;
+        count += find.found.called_nup || (Nup::Read(find.found.parts, info, error), info.container);
+    }
+    return count;
+}
+
+bool RemoveGame(const Game& game) {
+    bool ok = true;
+    for (const Game::Part& part : game.parts) {
+        ok = std::remove(OnCard(part.path).c_str()) == 0 && ok;
+    }
+    if (ok && !game.own_folder.empty()) {
+        rmdir(OnCard(game.own_folder).c_str()); // (refused when anything else is in it: then it stays)
+    }
+    return ok;
+}
+
 std::vector<Game> ScanGames(const std::string& games_folder) {
     std::vector<Game> games;
-    std::vector<std::string> files;
-    ListFolders(games_folder, &files);
+    std::vector<Find> finds;
+    std::set<std::string> taken;
+    FindGames(games_folder, kDeepest, false, finds, taken);
 
     // What was read before: a line for each container (name, size, time, then what it said).
     const std::string cache_path = std::string{kCache} + "/library.txt";
@@ -196,7 +283,13 @@ std::vector<Game> ScanGames(const std::string& games_folder) {
     if (std::FILE* f = std::fopen(OnCard(cache_path).c_str(), "rb")) {
         char line[2048];
         while (std::fgets(line, sizeof line, f)) {
-            std::vector<std::string> fields = Split(Trim(line), '\t');
+            // (the line's end only is taken off: its last fields are empty for a game that can
+            // be started, and the tabs between them are what makes them nine)
+            std::string text = line;
+            while (!text.empty() && (text.back() == '\n' || text.back() == '\r')) {
+                text.pop_back();
+            }
+            std::vector<std::string> fields = Split(text, '\t');
             if (fields.size() >= 9) {
                 known[fields[0]] = std::move(fields);
             }
@@ -206,19 +299,24 @@ std::vector<Game> ScanGames(const std::string& games_folder) {
 
     bool changed = false;
     std::vector<std::vector<std::string>> lines;
-    for (const std::string& file : files) {
-        if (!EndsWith(file, ".nup")) {
-            continue;
-        }
+    for (Find& find : finds) {
         Game game;
-        game.file = file;
-        game.path = games_folder + "/" + file;
-        struct stat st;
-        if (stat(OnCard(game.path).c_str(), &st) != 0) {
+        game.path = CardPath(find.found.given);
+        game.file = game.path.substr(game.path.rfind('/') + 1);
+        game.own_folder = std::move(find.own_folder);
+        game.size = find.found.size;
+        bool there = false;
+        for (const Nup::Part& part : find.found.parts) {
+            game.parts.push_back({CardPath(part.path), part.size});
+            struct stat st;
+            if (stat(part.path.c_str(), &st) == 0) {
+                there = true;
+                game.mtime = std::max(game.mtime, static_cast<std::int64_t>(st.st_mtime));
+            }
+        }
+        if (!there) {
             continue;
         }
-        game.size = static_cast<std::uint64_t>(st.st_size);
-        game.mtime = static_cast<std::int64_t>(st.st_mtime);
         const std::string size_text = std::to_string(game.size), time_text = std::to_string(game.mtime);
         const auto it = known.find(game.path);
         if (it != known.end() && it->second[1] == size_text && it->second[2] == time_text) {
@@ -231,10 +329,17 @@ std::vector<Game> ScanGames(const std::string& games_folder) {
             game.note = k[7];
             game.error = k[8];
         } else {
-            changed = true;
             Nup::Info info;
             std::string error;
-            if (Nup::Read(OnCard(game.path), info, error)) {
+            const bool read = Nup::Read(find.found.parts, info, error);
+            if (!info.container && !find.found.called_nup) {
+                // Files that look like the parts of something ("x.001", "x.002"; "0", "1" in a
+                // folder) and aren't called a container's: an archive in volumes, a program's
+                // own data. Only a container among those is a game.
+                continue;
+            }
+            changed = true;
+            if (read) {
                 game.title_id = info.title_id;
                 game.id = Hex16(info.title_id);
                 game.title = Flat(info.title);
@@ -259,7 +364,8 @@ std::vector<Game> ScanGames(const std::string& games_folder) {
             }
         }
         if (game.title.empty()) {
-            game.title = file.substr(0, file.size() - 4); // (the file's own name, without ".nup")
+            // (the file's own name without ".nup"; of parts, what their names have in common, or their folder's name)
+            game.title = find.found.name.empty() ? game.file : find.found.name;
         }
         lines.push_back({game.path, size_text, time_text, game.id, game.title, game.publisher, game.version, game.note, game.error});
         games.push_back(std::move(game));

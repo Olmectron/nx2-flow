@@ -43,6 +43,37 @@ card's root.
 
 Open the homebrew menu over a game (hold R while starting it), start **nx2-flow**, pick a game.
 
+## A FAT32 card: a game in parts
+
+A card formatted as FAT32 takes no file of 4 GB or more. Cut the NUP file in parts on the computer, with a tool you already
+have, and copy the parts to `/nx2-flow/games/`: the menu shows them as one game and the loader reads them as the one file they
+were. Nothing has to be joined again, and no special tool is needed.
+
+| With | How | What it makes |
+|---|---|---|
+| 7-Zip (Windows) | in 7-Zip's own window: select the file, **File > Split file...**, size `4000M` | `Game.nup.001`, `Game.nup.002`, ... |
+| `split` (Linux, macOS, Git Bash) | `split -b 4000m Game.nup Game.nup.` | `Game.nup.aa`, `Game.nup.ab`, ... |
+| HJSplit and the like | Split, 4000 MB | `Game.nup.001`, `Game.nup.002`, ... |
+
+What is taken for one game's parts: files that share a name and differ in a numbered ending, numbered one after the other
+from 0 or 1.
+
+```
+Game.nup.001  Game.nup.002  ...      a number as the last ending (also .00, .0, .1)
+Game.nup.part1  Game.nup.part2       "part" and a number
+Game.nup.aa  Game.nup.ab  ...        letters, after ".nup"
+Game.nu0  Game.nu1  ...              the ending's last letter made a number
+Game.part1.nup  Game.001.nup         the number before the ending
+Game/00  Game/01  ...                nameless parts in a folder of the game's own: the folder is the game
+```
+
+The parts may be of any size under 4 GB, and need not be of one size. They can be in the games folder itself or in a folder of
+their own inside it; folders are looked into. A game whose part is missing isn't started: its log says which file is not
+all there.
+
+A file sent to the menu's own receiver (its Transfer screen) is cut the same way by the menu when the card can't take it
+whole; `split=<MB>` in `/nx2-flow/menu.cfg` makes it cut every larger file in parts of that size.
+
 ## Your own cover
 
 Any picture can be a game's cover: put it on the card, named by the game's title id.
@@ -65,7 +96,8 @@ The menu's Transfer screen takes the file from a computer; `menu/README.md` has 
 - **Which game the homebrew menu is started over matters.** To the console the running program is that game, and has what that
   game may have: its memory for graphics, its "system resource", the services it may open. The loader stands in for the services
   a game can run without (network, online data, amiibo and the like) and says so in the game's log; it can't for the rest. The
-  surest host is the same game.
+  surest host is the same game, and a Switch 2 game needs a Switch 2 game as its host (a Switch game's has too little memory).
+  A user's table of what each host has is in [issue 5](https://github.com/Olmectron/nx2-flow/issues/5).
 - **Not every game runs.** The console's loader service maps seven modules for one program. A game with more, or one that
   loads modules of its own as it runs, has the ones that allow it made into one by the loader; a game that still doesn't fit
   needs a port made for it with nx2-relink.
