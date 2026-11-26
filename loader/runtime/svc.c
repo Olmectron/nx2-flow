@@ -6,6 +6,9 @@
 #include <switch.h>
 
 #include "nx2.h"
+#include "bcat_offline.h"
+
+static Nx2BcatState bcat_state;
 
 static u8 *heap_base;
 static u64 heap_max, heap_now;
@@ -108,10 +111,10 @@ static const char *session_name(u32 h) {
         if (sessions[k].handle == h) return sessions[k].name;
     return "?";
 }
-// (the sessions the port answers for: the file system's, the applet's, add-on content's, and sm: itself)
+// (the sessions the port answers for: the file system's, the applet's, add-on content's, bcat's, and sm: itself)
 static int session_kept(const char *n) {
     return (n[0] == 'f' && n[1] == 's' && n[2] == 'p') || (n[0] == 'a' && n[1] == 'p' && n[2] == 'p') || (n[0] == 'a' && n[1] == 'o' && n[2] == 'c') ||
-           (n[0] == 's' && n[1] == 'm' && n[2] == ':') || n[0] == '~';
+           (n[0] == 'b' && n[1] == 'c' && n[2] == 'a' && n[3] == 't') || (n[0] == 's' && n[1] == 'm' && n[2] == ':') || n[0] == '~';
 }
 static void session_forget(u32 h) {  // the handle is being closed: its number may be another session's next
     sessions_take();
@@ -517,12 +520,62 @@ static void send_sync(u64 *r, const char *module, u64 off, int log) {
     char text[9] = {0};
     for (u32 k = 0; q && k < 8; k++) text[k] = (q[16 + k] >= 0x20 && q[16 + k] < 0x7F) ? (char)q[16 + k] : 0;
     const char *who = session_name(h);
+    if (nx2_bcat_is_prog_handle(h)) {  // (a virtual IDeliveryCacheProgressService session handle; bcat_offline.h)
+        Nx2BcatReq breq;
+        u32 bkrc = 0;
+        if (nx2_bcat_parse_req(m, &breq) && nx2_bcat_handle_progress(&bcat_state, m, &breq, h, &bkrc)) {
+            r[0] = bkrc;
+            return;
+        }
+    }
     if (who[0] == '~') {  // (a session of the port's own, in place of a service the started-over title may not open)
         const int said = bytes_wanted(who);
         if (said) nx2_log("[ipc] %s (handle %x), the port's own:\n", who, (u64)h), bytes_said("asked", m);
+        if (starts(who + 3, "bcat")) {
+            Nx2BcatReq breq;
+            u32 bkrc = 0, bid = 0;
+            if (nx2_bcat_parse_req(m, &breq)) {
+                if (breq.is_domain && nx2_bcat_is_prog_obj(breq.object_id) && nx2_bcat_handle_progress(&bcat_state, m, &breq, 0, &bkrc)) {
+                    if (said) bytes_said("answered here", m);
+                    r[0] = bkrc;
+                    return;
+                }
+                if (nx2_bcat_try_copy_from_domain(&bcat_state, m, &breq, &bid)) {
+                    if (said) bytes_said("answered here", m);
+                    r[0] = 0;
+                    return;
+                }
+                if ((breq.type == 4 || breq.type == 6) && breq.has_sfci && nx2_bcat_is_sync_cmd(breq.cmd)) {
+                    nx2_bcat_synthesize_sync(&bcat_state, m, &breq, &bid);
+                    nx2_log("[bcat] stood-in %s command %u: returning completed offline progress (%s %x)\n", who, (u64)breq.cmd,
+                            breq.is_domain ? "object" : "handle", (u64)bid);
+                    if (said) bytes_said("answered here", m);
+                    r[0] = 0;
+                    return;
+                }
+            }
+        }
         stood_answer(r, m, h, who);
         if (said) bytes_said("answered here", m);
         return;
+    }
+    const int is_bcat = starts(who, "bcat");
+    Nx2BcatReq bcat_req;
+    int bcat_req_ok = 0;
+    if (is_bcat) {
+        bcat_req_ok = nx2_bcat_parse_req(m, &bcat_req);
+        if (bcat_req_ok) {
+            u32 bkrc = 0, bid = 0;
+            if (bcat_req.is_domain && nx2_bcat_is_prog_obj(bcat_req.object_id) &&
+                nx2_bcat_handle_progress(&bcat_state, m, &bcat_req, 0, &bkrc)) {
+                r[0] = bkrc;
+                return;
+            }
+            if (nx2_bcat_try_copy_from_domain(&bcat_state, m, &bcat_req, &bid)) {
+                r[0] = 0;
+                return;
+            }
+        }
     }
     const int is_sm = who[0] == 's' && who[1] == 'm' && who[2] == ':';
     // A later SDK speaks to sm: in the system's newer, shorter form (TIPC: the command is in the message's type, 16 and up, and the
@@ -659,6 +712,19 @@ static void send_sync(u64 *r, const char *module, u64 off, int log) {
 #endif
     const u8 *a = payload(m, "SFCO");
     u32 result = a ? rd32(a + 8) : 0, got = rc ? 0 : answer_handle(m);
+    if (is_bcat && !rc && bcat_req_ok && (bcat_req.type == 4 || bcat_req.type == 6) && bcat_req.has_sfci) {
+        if (nx2_bcat_is_sync_cmd(bcat_req.cmd) && nx2_bcat_is_offline_donor_error(result)) {
+            u32 bid = 0;
+            nx2_bcat_synthesize_sync(&bcat_state, m, &bcat_req, &bid);
+            nx2_log("[bcat] %s command %u returned %x (no donor BCAT storage): returning completed offline progress (%s %x)\n", who,
+                    (u64)bcat_req.cmd, (u64)result, bcat_req.is_domain ? "object" : "handle", (u64)bid);
+            result = 0, got = 0;
+        } else if (nx2_bcat_is_cancel_cmd(bcat_req.cmd) && nx2_bcat_is_offline_donor_error(result)) {
+            nx2_bcat_reply_ok(m, bcat_req.is_domain);
+            nx2_log("[bcat] %s command %u returned %x: answered done\n", who, (u64)bcat_req.cmd, (u64)result);
+            result = 0, got = 0;
+        }
+    }
     if (is_sm && cmd == 1 && !rc && !got) {
         const u32 said = q ? result : short_result(m);
         if (said == 0x1015) {
@@ -808,7 +874,24 @@ int nx2_svc(u64 *r, u32 n) {
         nx2_log("[svc] %2x %s (%x, %x, %x, %x) from %s+%x%s\n", (u64)n, name_of(n), r[0], r[1], r[2], r[3], module, off,
                 seen == 2 && !verbose ? " (its later uses aren't logged)" : "");
     }
-    if (n == 0x16) session_forget((u32)r[0]);  // CloseHandle
+    if (n == 0x16) {
+        session_forget((u32)r[0]);  // CloseHandle
+        if (nx2_bcat_is_prog_handle((u32)r[0])) {
+            nx2_bcat_close_prog_handle(&bcat_state, (u32)r[0]);
+            r[0] = 0;
+            return 1;
+        }
+        if (nx2_bcat_is_event_handle((u32)r[0])) {
+            nx2_bcat_close_event_handle(&bcat_state, (u32)r[0]);
+            r[0] = 0;
+            return 1;
+        }
+    }
+    if ((n == 0x17 || n == 0x12) && nx2_bcat_is_event_handle((u32)r[0])) {
+        nx2_bcat_clear_event(&bcat_state, (u32)r[0]);
+        r[0] = 0;
+        return 1;
+    }
     // (a handle of the port's own, standing for a service the started-over title may not open: closed, reset, waited on here)
     if ((n == 0x16 || n == 0x17 || n == 0x12) && STOOD_HANDLE(r[0])) {
         r[0] = 0;
@@ -818,6 +901,10 @@ int nx2_svc(u64 *r, u32 n) {
         const u32 *all = (const u32 *)r[1];
         u32 real[64], place[64], count = 0, mine = 0;
         for (u32 k = 0; k < (u32)r[2]; k++) {
+            if (nx2_bcat_event_is_signaled(&bcat_state, all[k])) {
+                r[0] = 0, r[1] = k;
+                return 1;
+            }
             if (STOOD_HANDLE(all[k])) mine++;
             else real[count] = all[k], place[count++] = k;
         }
