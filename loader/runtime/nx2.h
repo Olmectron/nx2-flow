@@ -32,6 +32,7 @@ typedef int32_t s32;
 #define NX2_TOOL "nx2-flow"
 #define NX2_NAME nx2_game_id
 extern char nx2_game_id[17];           // the title id, 16 hex digits
+extern u64 nx2_game_title_id;          // the title id, as a 64-bit integer
 const char *nx2_home(void);            // "/nx2-flow/<title id>", as the file system service is given it
 const char *nx2_file(const char *name);  // "sdmc:/nx2-flow/<title id>/<name>": good until eight more have been asked for
 #define NX2_F(name) nx2_file(name)
