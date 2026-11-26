@@ -687,6 +687,29 @@ u32 nx2_create_cache_storage(s32 index, s64 data_size, s64 journal_size) {
 
 int nx2_has_sd_save_fs(void) { return host_fs != NULL; }
 
+static s64 extended_save_data_size, extended_save_journal_size;
+static int save_extended;
+
+u32 nx2_extend_save_data(const void *uid, s64 data_size, s64 journal_size) {
+    if (!uid || data_size < 0 || journal_size < 0) return 0x2EE202;
+    __atomic_store_n(&extended_save_data_size, data_size, __ATOMIC_RELAXED);
+    __atomic_store_n(&extended_save_journal_size, journal_size, __ATOMIC_RELAXED);
+    __atomic_store_n(&save_extended, 1, __ATOMIC_RELEASE);
+    nx2_log("[save] ExtendSaveData(data=%u MB, journal=%u MB): answered here (SD-backed save)\n",
+            (u64)data_size >> 20, (u64)journal_size >> 20);
+    return 0;
+}
+
+u32 nx2_get_save_data_size(s64 *out_data, s64 *out_journal, const void *uid, u32 (*real)(s64 *, s64 *, const void *)) {
+    if (!uid) return 0x2EE202;
+    if (__atomic_load_n(&save_extended, __ATOMIC_ACQUIRE)) {
+        if (out_data) *out_data = __atomic_load_n(&extended_save_data_size, __ATOMIC_RELAXED);
+        if (out_journal) *out_journal = __atomic_load_n(&extended_save_journal_size, __ATOMIC_RELAXED);
+        return 0;
+    }
+    return real ? real(out_data, out_journal, uid) : 0x2EE202;
+}
+
 void nx2_save_open(void) {
     FsFileSystem *sd = fsdevGetDeviceFileSystem("sdmc");
     if (!sd) return;
