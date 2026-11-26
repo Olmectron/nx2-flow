@@ -66,8 +66,9 @@ The menu's Transfer screen takes the file from a computer; `menu/README.md` has 
   game may have: its memory for graphics, its "system resource", the services it may open. The loader stands in for the services
   a game can run without (network, online data, amiibo and the like) and says so in the game's log; it can't for the rest. The
   surest host is the same game.
-- **Not every game runs.** A game with more modules than the console's loader service maps for one program, or one that loads
-  many modules of its own as it runs, needs a port made for it with nx2-relink.
+- **Not every game runs.** The console's loader service maps seven modules for one program. A game with more, or one that
+  loads modules of its own as it runs, has the ones that allow it made into one by the loader; a game that still doesn't fit
+  needs a port made for it with nx2-relink.
 - **Mods.** A file put in the game's folder under `mods/`, at the path it has inside the game, is what the game gets in place of
   its own. More sets go in `modsets/<name>/`; the menu picks which is in use.
 - **Slots of saved data.** Each slot is a folder of the game's own saved data; the menu makes, copies and picks them.

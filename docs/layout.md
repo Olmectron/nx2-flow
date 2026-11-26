@@ -54,6 +54,7 @@ Written by the menu, read by the loader. A key that is absent or empty means the
 | `save` | the slot of saved data to use: the name of a folder under `saves/` | `save/` (the slot "default") |
 | `memory` | MB the game is told of (2048 to 8992). **Advanced** | decided by the loader |
 | `room` | MB the loader keeps for itself (128 to 2048). **Advanced** | 384 |
+| `modules` | `whole`: no module is merged with another; `merge`: all that may be are. **Advanced**, by hand: the menu has no row for it | merged only when the game needs the places |
 
 The advanced ones are shown behind a warning: a wrong value keeps a game from starting. Removing the key puts it right again.
 The detailed log is not a key: it is the file `debug` in the game's folder.

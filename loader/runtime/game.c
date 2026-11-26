@@ -8,14 +8,16 @@
 //   - the files: every package's, laid over one another, and then a folder of the user's own (mods). No image of them is written
 //     anywhere: its header and its tables are made in memory, and a read of the image is answered from the NUP file's own bytes;
 //   - the game's folder on the card, named by its title id, where its saved data, its logs and its settings are.
-// Only modules kept whole can be had this way (a module made part of a port's own code is made so on a computer): a game whose
-// modules are more than the loader service maps for one program still needs a port.
+// The loader service maps seven images for a program besides its own. A game with more modules than that, or one that loads
+// modules of its own as it runs, has the ones that needn't be whole made into one image here (merge.c), as a port has them made
+// part of its own code on a computer; a game with more than seven that have to be whole still needs a port.
 #ifdef NX2_LOADER
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <switch.h>
+#define ZSTD_STATIC_LINKING_ONLY  // (for the decoder to write straight into the file's own memory: unpack_one)
 #include <zstd.h>  // (third_party/zstd: Zstandard's own decoder)
 
 #include "nx2.h"
@@ -133,7 +135,7 @@ static int nup_open(const char *path) {
     }
     const u64 toc_at = r64(head + 8);
     nup.toc_size = r64(head + 16), nup.npackages = r32(head + 0x48);
-    if (nup.toc_size < 0x30 || nup.toc_size > (512u << 20) || !(nup.toc = malloc(nup.toc_size)) || nup_read(toc_at, nup.toc, nup.toc_size) ||
+    if (nup.toc_size < 0x30 || nup.toc_size > (512u << 20) || !(nup.toc = nx2_big_alloc(nup.toc_size, 1)) || nup_read(toc_at, nup.toc, nup.toc_size) ||
         memcmp(nup.toc, "TOC\x01", 4)) {
         nx2_log("[game] its table of contents (%u KB) can't be read\n", nup.toc_size >> 10);
         return -1;
@@ -181,21 +183,108 @@ static int lz4_block(const u8 *src, u64 n, u8 *out, u64 out_size) {
     return o == out_size ? 0 : -1;
 }
 
+// ---------------------------------------------------------------- the loader's own large pieces of memory
+// A game's modules and its files unpacked as they are read are tens of MB each, and the allocator of the library this is built
+// with (mimalloc; libounce's heap.h) serves pieces of that size badly: of a heap of 512 MB with 481 free, 360 MB could be had in
+// pieces of 8 MB, and with a game's 174 MB of modules in it a file of 65 MB had no place though 279 MB were free; the game
+// ended there (measured on the console, 2026-11-25). So the top of the program's own memory, as much as the "room" is, is kept
+// from that allocator (main.c) and given out here: whole pages, the pieces that stay (modules) from the bottom, the ones that
+// come and go from the top, and neighbours joined again when they are given back.
+u8 *nx2_big_at;
+u64 nx2_big_size;
+#define PIECES 512
+static struct {
+    u64 at, size;
+    u32 used;
+} pieces[PIECES];
+static u32 npieces, pieces_lock;
+void *nx2_big_alloc(u64 size, int low) {
+    size = (size + 0xFFF) & ~0xFFFull;
+    if (!size) size = 0x1000;
+    if (!nx2_big_size) return aligned_alloc(0x1000, size);  // (nothing was kept for it: the allocator's own, as before)
+    while (__atomic_exchange_n(&pieces_lock, 1, __ATOMIC_ACQUIRE)) svcSleepThread(0);
+    if (!npieces) pieces[0].at = (u64)nx2_big_at, pieces[0].size = nx2_big_size, pieces[0].used = 0, npieces = 1;
+    int found = -1;
+    for (u32 k = 0; k < npieces; k++)
+        if (!pieces[k].used && pieces[k].size >= size && (found < 0 || !low)) found = (int)k;  // (kept in order: the first, or the last)
+    u64 at = 0;
+    if (found >= 0) {
+        const u64 left = pieces[found].size - size;
+        if (left && npieces < PIECES) {
+            // the piece split in two: what is asked for at its bottom (low) or at its top
+            for (u32 k = npieces; k > (u32)found + 1; k--) pieces[k] = pieces[k - 1];
+            npieces++;
+            const u64 start = pieces[found].at;
+            const int taken = low ? found : found + 1, rest = low ? found + 1 : found;
+            pieces[taken].at = low ? start : start + left, pieces[taken].size = size, pieces[taken].used = 1;
+            pieces[rest].at = low ? start + size : start, pieces[rest].size = left, pieces[rest].used = 0;
+            at = pieces[taken].at;
+        } else {
+            pieces[found].used = 1, at = pieces[found].at;
+        }
+    }
+    __atomic_store_n(&pieces_lock, 0, __ATOMIC_RELEASE);
+    return (void *)at;
+}
+void nx2_big_free(void *p) {
+    if (!p) return;
+    if (!nx2_big_size || (u64)p < (u64)nx2_big_at || (u64)p >= (u64)nx2_big_at + nx2_big_size) {
+        free(p);
+        return;
+    }
+    while (__atomic_exchange_n(&pieces_lock, 1, __ATOMIC_ACQUIRE)) svcSleepThread(0);
+    for (u32 k = 0; k < npieces; k++) {
+        if (pieces[k].at != (u64)p || !pieces[k].used) continue;
+        pieces[k].used = 0;
+        if (k + 1 < npieces && !pieces[k + 1].used) {
+            pieces[k].size += pieces[k + 1].size;
+            for (u32 j = k + 1; j + 1 < npieces; j++) pieces[j] = pieces[j + 1];
+            npieces--;
+        }
+        if (k && !pieces[k - 1].used) {
+            pieces[k - 1].size += pieces[k].size;
+            for (u32 j = k; j + 1 < npieces; j++) pieces[j] = pieces[j + 1];
+            npieces--;
+        }
+        break;
+    }
+    __atomic_store_n(&pieces_lock, 0, __ATOMIC_RELEASE);
+}
+// a table that grows: a larger piece, with what it had copied over (null: none to be had, and the old one is as it was)
+static void *big_grown(void *old, u64 had, u64 want) {
+    void *p = nx2_big_alloc(want, 1);
+    if (!p) return NULL;
+    if (old) memcpy(p, old, had < want ? had : want), nx2_big_free(old);
+    return p;
+}
+// what can still be had of it: all that is free, and the largest piece
+static void big_left(u64 *all, u64 *largest) {
+    *all = *largest = 0;
+    while (__atomic_exchange_n(&pieces_lock, 1, __ATOMIC_ACQUIRE)) svcSleepThread(0);
+    if (!npieces && nx2_big_size) *all = *largest = nx2_big_size;
+    for (u32 k = 0; k < npieces; k++)
+        if (!pieces[k].used) {
+            *all += pieces[k].size;
+            if (pieces[k].size > *largest) *largest = pieces[k].size;
+        }
+    __atomic_store_n(&pieces_lock, 0, __ATOMIC_RELEASE);
+}
+
 // One module, from its file in the NUP: its image in memory (the bss not there), and the row of each table a port has for it.
 static int module_load(unsigned k, const char *name, u64 file) {
     const NupFile f = nup_file(file);
-    u8 *nso = malloc(f.size ? f.size : 1);
+    u8 *nso = nx2_big_alloc(f.size, 0);
     int read = -1;
     if (nso && f.codec == 1) {  // (kept in the NUP file as one Zstandard frame)
-        u8 *packed = malloc(f.kept ? f.kept : 1);
+        u8 *packed = nx2_big_alloc(f.kept, 0);
         if (packed && !nup_read(f.at, packed, f.kept)) read = ZSTD_decompress(nso, f.size, packed, f.kept) == f.size ? 0 : -1;
-        free(packed);
+        nx2_big_free(packed);
     } else if (nso && !f.codec) {
         read = nup_read(f.at, nso, f.size) ? -1 : 0;
     }
     if (read || f.size < 0x100 || memcmp(nso, "NSO0", 4)) {
         nx2_log("[game] %s: not a module's file (%u KB)\n", name, f.size >> 10);
-        free(nso);
+        nx2_big_free(nso);
         return -1;
     }
     const u32 flags = r32(nso + 0x0C);
@@ -203,10 +292,10 @@ static int module_load(unsigned k, const char *name, u64 file) {
     for (int s = 0; s < 3; s++) mem[s] = r32(nso + 0x10 + s * 0x10 + 4), size[s] = r32(nso + 0x10 + s * 0x10 + 8);
     const u64 image_size = mem[2] + size[2];
     // (a page before it: the loader service is handed the module from there, with a header of the port's in that page; whole.c)
-    u8 *block = aligned_alloc(0x1000, 0x1000 + ((image_size + 0xFFF) & ~0xFFFull)), *img = block ? block + 0x1000 : NULL;
+    u8 *block = nx2_big_alloc(0x1000 + ((image_size + 0xFFF) & ~0xFFFull), 1), *img = block ? block + 0x1000 : NULL;
     if (!img || mem[0] || mem[1] < size[0] || mem[2] < mem[1] + size[1]) {
         nx2_log("[game] %s: its parts aren't where a module's are, or there is no memory for its %u KB\n", name, image_size >> 10);
-        free(nso);
+        nx2_big_free(nso);
         return -1;
     }
     memset(img, 0, image_size);
@@ -223,26 +312,26 @@ static int module_load(unsigned k, const char *name, u64 file) {
         } else if ((flags & 0x80) && packed >= 4 && !memcmp(raw, "ZBIC", 4)) {
             // (a later system's way: the frame written again as Zstandard's, zbic.c, and unpacked by that)
             const u64 room = packed + packed / 4 + (1u << 16);
-            u8 *frame = malloc(room);
+            u8 *frame = nx2_big_alloc(room, 0);
             const s64 len = frame ? nx2_zbic_to_zstd(raw, packed, frame, room) : -1;
             bad = len < 0 || ZSTD_decompress(img + mem[s], size[s], frame, (u64)len) != size[s];
-            free(frame);
+            nx2_big_free(frame);
         } else {
             bad = lz4_block(raw, packed, img + mem[s], size[s]);
         }
         if (bad) {
             if (bad != 2) nx2_log("[game] %s: its part %d can't be unpacked: the file is damaged\n", name, (s64)s);
-            free(nso), free(block);
+            nx2_big_free(nso), nx2_big_free(block);
             return -1;
         }
     }
     const u64 bss_size = r32(nso + 0x3C), dynstr_off = r32(nso + 0x90), dynstr_size = r32(nso + 0x94), dynsym_off = r32(nso + 0x98),
               dynsym_size = r32(nso + 0x9C);
-    free(nso);
+    nx2_big_free(nso);
     const u64 mod0 = r32(img + 4);
     if (mod0 + 0x1C > image_size || memcmp(img + mod0, "MOD0", 4)) {
         nx2_log("[game] %s: no module header where its code says (%x)\n", name, mod0);
-        free(block);
+        nx2_big_free(block);
         return -1;
     }
     const u64 dynamic = mod0 + (s64)(s32)r32(img + mod0 + 4), bss_end = mod0 + (s64)(s32)r32(img + mod0 + 12),
@@ -270,7 +359,7 @@ static int module_load(unsigned k, const char *name, u64 file) {
         if ((r32(img + a) & 0xFFE0001Fu) == 0xD4000001u) count++;
     u32 *svcs = malloc((count ? count : 1) * 8);
     if (!svcs) {
-        free(block);
+        nx2_big_free(block);
         return -1;
     }
     count = 0;
@@ -324,7 +413,7 @@ static u32 child_hash(u32 parent, const u8 *name, u32 len) {
 }
 static int slots_grow(void) {
     const u32 n = rom.nslots ? rom.nslots * 2 : 1u << 16;
-    u32 *s = malloc(n * 4ull);
+    u32 *s = nx2_big_alloc(n * 4ull, 1);
     if (!s) return -1;
     memset(s, 0xFF, n * 4ull);
     for (u32 k = 0; k < rom.nslots; k++) {
@@ -337,7 +426,7 @@ static int slots_grow(void) {
         while (s[at] != NONE) at = (at + 1) & (n - 1);
         s[at] = v;
     }
-    free(rom.slots);
+    nx2_big_free(rom.slots);
     rom.slots = s, rom.nslots = n;
     return 0;
 }
@@ -367,7 +456,7 @@ static u32 dir_under(u32 parent, const u8 *name, u32 len) {
     }
     if (rom.ndirs == rom.dirs_room) {
         const u32 room = rom.dirs_room ? rom.dirs_room * 2 : 4096;
-        Dir *d = realloc(rom.dirs, room * sizeof(Dir));
+        Dir *d = big_grown(rom.dirs, rom.dirs_room * sizeof(Dir), room * sizeof(Dir));
         if (!d) return NONE;
         rom.dirs = d, rom.dirs_room = room;
     }
@@ -391,7 +480,7 @@ static int file_put(u32 dir, const u8 *name, u32 len, u8 kind, u64 size, u64 at,
     }
     if (rom.nfiles == rom.files_room) {
         const u32 room = rom.files_room ? rom.files_room * 2 : 16384;
-        Ent *e = realloc(rom.files, room * sizeof(Ent));
+        Ent *e = big_grown(rom.files, rom.files_room * sizeof(Ent), room * sizeof(Ent));
         if (!e) return -1;
         rom.files = e, rom.files_room = room;
     }
@@ -430,7 +519,7 @@ static int lay_nup(u32 from, u32 to, int depth) {
 static char *loose_add(const char *text, u64 len) {
     if (rom.loose_size + len + 1 > rom.loose_room) {
         const u64 room = (rom.loose_room ? rom.loose_room * 2 : 1u << 16) + len + 1;
-        char *l = realloc(rom.loose, room);
+        char *l = big_grown(rom.loose, rom.loose_size, room);
         if (!l) return NULL;
         // (names already taken from the block are pointed at by entries: they are moved with it)
         if (l != rom.loose) {
@@ -515,8 +604,8 @@ static u32 pad4(u32 n) { return (n + 3) & ~3u; }
 
 static int rom_build(void) {
     // every folder's children put in order, and the folders numbered as the image has them: the root, then level by level
-    u32 *sorted = malloc(((u64)rom.ndirs + rom.nfiles + 1) * 4), *level = malloc(rom.ndirs * 4ull);
-    rom.order = malloc((rom.nfiles ? rom.nfiles : 1) * 4ull);
+    u32 *sorted = nx2_big_alloc(((u64)rom.ndirs + rom.nfiles + 1) * 4, 0), *level = nx2_big_alloc(rom.ndirs * 4ull, 0);
+    rom.order = nx2_big_alloc((rom.nfiles ? rom.nfiles : 1) * 4ull, 1);
     if (!sorted || !level || !rom.order) return -1;
     u32 queued = 0;
     level[queued++] = 0;
@@ -535,7 +624,7 @@ static int rom_build(void) {
         d->first_file = n ? sorted[0] : NONE;
         for (u32 k = 0; k < n; k++) rom.files[sorted[k]].next = k + 1 < n ? sorted[k + 1] : NONE;
     }
-    free(sorted);
+    nx2_big_free(sorted);
     if (queued != rom.ndirs) return -1;
     // where each entry is in its table, and each file's bytes in the data
     u32 dirs_size = 0, files_size = 0, in_order = 0;
@@ -553,7 +642,7 @@ static int rom_build(void) {
     rom.data_size = data;
     rom.tables_at = (0x200 + data + 15) & ~15ull;
     rom.tables_size = 4ull * dir_buckets + dirs_size + 4ull * file_buckets + files_size;
-    rom.tables = malloc(rom.tables_size);
+    rom.tables = nx2_big_alloc(rom.tables_size, 1);
     if (!rom.tables) return -1;
     u8 *dir_hash = rom.tables, *dir_table = dir_hash + 4ull * dir_buckets, *file_hash = dir_table + dirs_size, *file_table = file_hash + 4ull * file_buckets;
     memset(rom.tables, 0, rom.tables_size);
@@ -577,7 +666,7 @@ static int rom_build(void) {
             w32(b, e->meta);
         }
     }
-    free(level);
+    nx2_big_free(level);
     // the header: its own length, then where each table is and how long, then where the files' bytes begin
     u64 at = rom.tables_at;
     const u64 sizes[4] = {4ull * dir_buckets, dirs_size, 4ull * file_buckets, files_size};
@@ -649,31 +738,69 @@ static void take(u32 *lock) {
     while (__atomic_exchange_n(lock, 1, __ATOMIC_ACQUIRE)) svcSleepThread(0);
 }
 static void give(u32 *lock) { __atomic_store_n(lock, 0, __ATOMIC_RELEASE); }
+// How much of the loader's own memory can still be had, found by asking: the largest piece, and how much in pieces of 8 MB.
+// (Only where the C library may be used: the program's start, the thread that unpacks.)
+static void room_said(const char *when) {
+    extern u64 heapGetTotalSize(void), heapGetFreeSize(void);  // (libounce's: its allocator's own count)
+    u64 all, largest;
+    big_left(&all, &largest);
+    nx2_log("[game] the loader's own memory, %s: of the %u MB kept for large pieces %u MB are free, %u MB in one piece; the allocator has %u MB free of %u\n", when,
+            nx2_big_size >> 20, all >> 20, largest >> 20, heapGetFreeSize() >> 20, heapGetTotalSize() >> 20);
+}
+
 static void unpack_one(u32 file) {
     const Ent *e = &rom.files[file];
     const u64 kept_size = e->at2;
-    u8 *packed = malloc(kept_size ? kept_size : 1), *out = NULL;
-    u32 rc = packed ? nup_read(e->at, packed, kept_size) : 0x2EE202;
+    u8 *out = NULL;
+    u32 rc = 0, let_go = 0;
+    const char *why = "";
     // room for it: the ones read longest ago go, down to none (a file larger than all the room there is still has its turn)
-    for (int tries = 0; !rc && !out && tries <= UNPACKED; tries++) {
+    for (int tries = 0; !out && tries <= UNPACKED; tries++) {
         take(&unpacked_lock);
         while (unpacked_total + e->size > unpacked_room || tries) {
             int oldest = -1;
             for (int k = 0; k < UNPACKED; k++)
                 if (unpacked[k].file != NONE && !unpacked[k].held && (oldest < 0 || unpacked[k].age < unpacked[oldest].age)) oldest = k;
             if (oldest < 0) break;
-            free(unpacked[oldest].bytes);
-            unpacked_total -= unpacked[oldest].size, unpacked[oldest].file = NONE, unpacked[oldest].bytes = NULL;
+            nx2_big_free(unpacked[oldest].bytes);
+            unpacked_total -= unpacked[oldest].size, unpacked[oldest].file = NONE, unpacked[oldest].bytes = NULL, let_go++;
             if (tries) break;  // (no memory for it even so: one more goes at each try)
         }
         give(&unpacked_lock);
-        out = malloc(e->size ? e->size : 1);
+        out = nx2_big_alloc(e->size, 0);
     }
-    if (!rc && !out) rc = 0x2EE202;
+    if (!out) rc = 0x2EE202, why = "no memory for it";
+    // The packed bytes are read a piece at a time and unpacked straight into the file's own memory: a film of 65 MB, read whole
+    // and then unpacked, asked for twice its size at once, and a game was ended for want of it (log, 2026-11-25).
+    enum { PIECE = 1 << 20 };
     static ZSTD_DCtx *z;
+    static u8 *piece;
     if (!z) z = ZSTD_createDCtx();
-    if (!rc && (!z || ZSTD_decompressDCtx(z, out, e->size, packed, kept_size) != e->size)) rc = 0x2EE202;
-    free(packed);
+    if (!piece) piece = malloc(PIECE);
+    if (!rc && (!z || !piece)) rc = 0x2EE202, why = "no memory for the decoder";
+    if (!rc) {
+        ZSTD_DCtx_reset(z, ZSTD_reset_session_only);
+        ZSTD_DCtx_setParameter(z, ZSTD_d_stableOutBuffer, 1);
+        ZSTD_outBuffer to = {out, e->size, 0};
+        size_t left = 1;
+        for (u64 done = 0; !rc && done < kept_size && left;) {
+            const u64 n = kept_size - done < PIECE ? kept_size - done : PIECE;
+            if (nup_read(e->at + done, piece, n)) {
+                rc = 0x2EE202, why = "the NUP file couldn't be read";
+                break;
+            }
+            ZSTD_inBuffer from = {piece, n, 0};
+            while (from.pos < from.size && left) {
+                left = ZSTD_decompressStream(z, &to, &from);
+                if (ZSTD_isError(left)) {
+                    rc = 0x2EE202, why = "its bytes are not what was packed (damaged)";
+                    break;
+                }
+            }
+            done += n;
+        }
+        if (!rc && (left || to.pos != e->size)) rc = 0x2EE202, why = "its bytes end early (damaged)";
+    }
     if (!rc) {
         take(&unpacked_lock);
         int place = -1;
@@ -682,16 +809,18 @@ static void unpack_one(u32 file) {
         if (place < 0) {  // (every place taken: the one read longest ago gives its own)
             for (int k = 0; k < UNPACKED; k++)
                 if (!unpacked[k].held && (place < 0 || unpacked[k].age < unpacked[place].age)) place = k;
-            if (place >= 0) free(unpacked[place].bytes), unpacked_total -= unpacked[place].size;
+            if (place >= 0) nx2_big_free(unpacked[place].bytes), unpacked_total -= unpacked[place].size;
         }
         if (place >= 0) unpacked[place].file = file, unpacked[place].bytes = out, unpacked[place].size = e->size, unpacked[place].age = ++unpacked_clock, unpacked[place].held = 0, unpacked_total += e->size;
-        else rc = 0x2EE202;
+        else rc = 0x2EE202, why = "every unpacked file is being read";
         give(&unpacked_lock);
     }
     if (rc) {
-        free(out);
+        nx2_big_free(out);
         static u32 said;
-        if (said++ < 8) nx2_log("[game] a file kept packed in the NUP file couldn't be unpacked (%u KB to %u KB): damaged, or no memory for it\n", kept_size >> 10, e->size >> 10);
+        if (said < 2) room_said("as a file couldn't be unpacked");
+        if (said++ < 8) nx2_log("[game] a file kept packed in the NUP file couldn't be unpacked (%u KB to %u KB): %s; %u others were let go for it, %u MB of them are kept\n",
+                                kept_size >> 10, e->size >> 10, why, (u64)let_go, unpacked_total >> 20);
     }
     asked_rc = rc;
 }
@@ -801,16 +930,16 @@ static const Ent *rom_find(const char *path) {
 // a file of the image, whole, in memory of its own (to be freed); NULL if it can't be had
 static u8 *rom_whole(const Ent *e) {
     if (!e || e->size > (64u << 20)) return NULL;
-    u8 *out = malloc(e->size ? e->size : 1);
+    u8 *out = nx2_big_alloc(e->size, 0);
     u32 rc = out ? 0 : 1;
     if (!rc && e->kind == 0) rc = nup_read(e->at, out, e->size);
     else if (!rc && e->kind == 2) rc = loose_read(e->at, 0, out, e->size);
     else if (!rc) {
-        u8 *packed = malloc(e->at2 ? e->at2 : 1);
+        u8 *packed = nx2_big_alloc(e->at2, 0);
         rc = !packed || nup_read(e->at, packed, e->at2) || ZSTD_decompress(out, e->size, packed, e->at2) != e->size;
-        free(packed);
+        nx2_big_free(packed);
     }
-    if (rc) free(out), out = NULL;
+    if (rc) nx2_big_free(out), out = NULL;
     return out;
 }
 // a Zstandard frame unpacked with a dictionary (or none): its bytes, in memory of their own, or NULL
@@ -818,12 +947,12 @@ static u8 *unpack_with(const u8 *raw, u64 size, const u8 *dict, u64 dict_size, u
     unsigned long long whole = ZSTD_getFrameContentSize(raw, size);
     if (whole == ZSTD_CONTENTSIZE_ERROR) return NULL;
     if (whole == ZSTD_CONTENTSIZE_UNKNOWN || whole > (64u << 20)) whole = 16u << 20;
-    u8 *out = malloc(whole ? whole : 1);
+    u8 *out = nx2_big_alloc(whole, 0);
     ZSTD_DCtx *z = ZSTD_createDCtx();
     const size_t got = out && z ? ZSTD_decompress_usingDict(z, out, whole, raw, size, dict, dict_size) : (size_t)-1;
     ZSTD_freeDCtx(z);
     if (!out || ZSTD_isError(got)) {
-        free(out);
+        nx2_big_free(out);
         return NULL;
     }
     *out_size = got;
@@ -868,7 +997,7 @@ static void heaps_read(void) {
         u8 *packed = rom_whole(pack), *dicts = NULL;
         u64 dicts_size = 0;
         if (packed) dicts = unpack_with(packed, pack->size, NULL, 0, &dicts_size);
-        free(packed);
+        nx2_big_free(packed);
         if (dicts && dicts_size > 0x28 && !memcmp(dicts, "SARC", 4) && dicts[6] == 0xFF && dicts[7] == 0xFE) {
             const u64 data = r32(dicts + 0xC), count = dicts[0x1A] | (u64)dicts[0x1B] << 8;
             for (u64 k = 0; k < count && !byml && 0x30 + 16 * k <= dicts_size; k++) {
@@ -876,9 +1005,9 @@ static void heaps_read(void) {
                 if (start <= end && end <= dicts_size) byml = unpack_with(raw, table->size, dicts + start, end - start, &size);
             }
         }
-        free(dicts);
+        nx2_big_free(dicts);
         if (!byml) byml = unpack_with(raw, table->size, NULL, 0, &size);
-        free(raw);
+        nx2_big_free(raw);
     } else {
         byml = raw;
     }
@@ -897,7 +1026,7 @@ static void heaps_read(void) {
                 (u64)nx2_game_apart_mb);
     } else
         nx2_log("[game] the game's own table of heaps keeps no address space apart from its heap\n");
-    free(byml);
+    nx2_big_free(byml);
 }
 
 // ---------------------------------------------------------------- the game's folder and its settings
@@ -972,11 +1101,11 @@ int nx2_game_open(const char *path) {
         nx2_module_count++;
     }
     nx2_whole = (int)nx2_module_count;
-    // (the loader service maps eight images for a program, this one's own among them: whole.c)
-    if (nx2_module_count > 7) {
-        nx2_log("[game] the game has %u modules, and the loader service maps seven for a program besides its own: this game needs a port made for it\n",
-                (u64)nx2_module_count);
-        return -1;
+    {  // (the loader service maps eight images for a program, this one's own among them: the modules that needn't be whole are
+        // made into one image when the game needs the room; merge.c. game.cfg's "modules": "whole" or "merge", to say which)
+        char wish[16];
+        setting("modules", wish, sizeof wish);
+        if (nx2_merge_plan(wish)) return -1;
     }
     {  // what its own description asks of the console, which a program has from the title it is started over (main.c says both)
         const s64 npdm = nup_find(with_code.exefs, "main.npdm");
@@ -989,7 +1118,7 @@ int nx2_game_open(const char *path) {
     }
 
     // the files: each package's over the ones before, then the user's own folder
-    rom.dirs = malloc(4096 * sizeof(Dir)), rom.dirs_room = 4096;
+    rom.dirs = nx2_big_alloc(4096 * sizeof(Dir), 1), rom.dirs_room = 4096;
     if (!rom.dirs || slots_grow()) return -1;
     rom.dirs[0] = (Dir){(const u8 *)"", 0, 0, NONE, NONE, NONE, 0, 0}, rom.ndirs = 1;
     for (u32 k = 0; k < count; k++) {
@@ -1048,6 +1177,7 @@ int nx2_game_open(const char *path) {
         const u32 mb = (u32)strtoul(memory, NULL, 10);
         if (mb >= 2048 && mb <= 8992) nx2_game_mb = mb, nx2_game_room_mb = 64, nx2_log("[game] game.cfg: the game is told of %u MB\n", (u64)mb);
     }
+    room_said("with the game's modules and the table of its files in it");
     return 0;
 }
 #endif

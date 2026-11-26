@@ -37,6 +37,12 @@ const char *nx2_file(const char *name);  // "sdmc:/nx2-flow/<title id>/<name>": 
 #define NX2_F(name) nx2_file(name)
 extern u32 nx2_game_mb, nx2_game_room_mb, nx2_game_apart_mb, nx2_game_remote_mb, nx2_game_sysres_kb;
 int nx2_game_open(const char *nup_path);  // 0: the game's NUP file was read and its modules are in memory
+extern u8 *nx2_big_at;                    // the stretch of the program's memory kept for the loader's large pieces (game.c)
+extern u64 nx2_big_size;
+void *nx2_big_alloc(u64 size, int low);   // whole pages of it (low: from its bottom, for what stays); null when there is none
+void nx2_big_free(void *piece);
+int nx2_merge_plan(const char *wish);     // merge.c: the modules that needn't be whole made into one image, when the game needs the room
+int nx2_merge_map(void *ro_service);      // ... and that image mapped by the loader service, after the modules kept whole
 u64 nx2_game_rom_size(void);               // the game's files as one image, made from the NUP's (and a mods folder's) as it is read
 u32 nx2_game_rom_read(u64 offset, u8 *to, u64 size, u64 *got);
 #else

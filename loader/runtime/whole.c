@@ -113,6 +113,9 @@ int nx2_map_modules(void) {
                 (u64)m->text, at, im->ro_off, im->ro_off, m->data_off, rw_end, m->end, (u64)im->nsvcs);
         nx2_log_flush();
     }
+#ifdef NX2_LOADER
+    if (nx2_merge_map(&ro)) return -1;
+#endif
     {
         // <folder>/rocount: how many images the loader service takes for one program, measured: three-page images of nothing are
         // asked for until one is refused, and all of them are taken away again.

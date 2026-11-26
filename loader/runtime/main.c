@@ -16,6 +16,9 @@ static u64 early_size, early_all;
 // (a Switch 2 game's: the part of the heap given back to the kernel, below)
 static u64 heap_was, heap_given, heap_at, heap_host;
 static u32 heap_given_rc;
+#ifdef NX2_LOADER
+static u64 loader_room;  // (the game loader's room for a game's modules and unpacked files, below)
+#endif
 void __libnx_initheap(void) {
     extern char *fake_heap_start, *fake_heap_end;
     u8 *addr = NULL;
@@ -62,6 +65,7 @@ void __libnx_initheap(void) {
                     if (mb >= 128 && mb <= 2048) room = mb;
                 }
             host += room << 20;
+            loader_room = room << 20;
         }
 #endif
         u64 base = 0, end = 0;
@@ -113,6 +117,15 @@ void __libnx_initheap(void) {
         early_block = top - game, early_size = game;
         size = (u64)(early_block - addr);
     }
+#ifdef NX2_LOADER
+    // (The game loader's room is not the allocator's to give: a game's modules and its unpacked files are large pieces, which
+    // the library's allocator serves badly. The top of the host's part, as much as the room is, is game.c's own to give out.)
+    if (loader_room && size > loader_room + (96ull << 20)) {
+        nx2_big_size = loader_room & ~0xFFFull;
+        nx2_big_at = (u8 *)(((u64)addr + size - nx2_big_size) & ~0xFFFull);
+        size = (u64)(nx2_big_at - addr);
+    }
+#endif
     fake_heap_start = (char *)addr, fake_heap_end = (char *)addr + size;
 }
 
