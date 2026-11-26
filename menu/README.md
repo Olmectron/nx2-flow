@@ -26,13 +26,12 @@ out. It is under the **GNU General Public License, version 2 or later**, as toro
     to automatic (the key is taken out of `game.cfg`);
   - where the game's folder, log, crash report and saved data are.
 - **Settings** (`-`): the games folder (picked among the card's folders), the shelf, covers shown or hidden, cases or flat
-  pictures, the theme, downloading covers, covers from another console, files from a computer and the pace they are taken at,
+  pictures, the theme, downloading covers, files from a computer and the pace they are taken at,
   looking for games again.
 - **Starts a game** (`A`): asks the homebrew loader to start `/switch/nx2-flow/nx2-game.nro` next, with the NUP file, this
   menu's own path and, when the game has one set, `room=<MB>` as its arguments, and exits. If `nx2-game.nro` isn't there, it
   says so.
 - **Receives files from a computer** (`ZL`, or Settings): what Toronja Transfer does, in the menu. See below.
-- **Receives covers from another console** (Settings): from the companion program on a Switch that has internet access. See below.
 
 | Button | On the shelf | In a panel |
 |---|---|---|
@@ -70,10 +69,10 @@ make preview            or, on Windows:   sh tools/render_previews.sh
 That builds `preview/main.cpp` with the menu's own code, makes a pretend card (`tools/make_fake_card.py`: tiny NUP files of
 games that don't exist, with made-up names, icons, covers and saved data), plays the menu through its screens and writes them
 to `out/preview/*.png`. What the previews show is what the console's screen shows: the menu draws on a plain canvas either way.
-In the previews the two receivers are stand-ins that say what a scene needs; the receivers themselves run on a PC too:
+In the previews the receiver of files is a stand-in that says what a scene needs; the receiver itself runs on a PC too:
 
 ```
-make nettest            out/preview/transfer_test, out/preview/cover_share_test
+make nettest            out/preview/transfer_test
 ```
 
 ## Files from a computer
@@ -133,11 +132,6 @@ that ties the two was found. So nothing is guessed: a game gets covers from Game
   part could not be tried here (the site refused this computer's automated request for the list), and two games can share a
   name, so it is off unless asked for.
 - On the console: Settings, Download covers. For the games `ids.txt` has a code for, when the console has internet access.
-- **From another console**: Settings, Covers from another console. This console waits; the companion program on a Switch
-  that has internet access finds it (on the network both are on, or over a direct wireless link this console opens when nobody
-  answers on the network), may ask which games have no cover here, and sends the files. The exchange is toronja's cover share
-  with one message added for the asking: [`../docs/layout.md`](../docs/layout.md), "Covers by local wireless".
-  `tools/send_covers_test.py` is a sender in a few lines of Python, and `out/preview/cover_share_test` the receiver on a PC.
 - **Games of the newer console**: whether GameTDB files them under `switch/` too, or anywhere yet, isn't known. A game with no
   cover shows a case made of its own icon and name.
 
@@ -145,24 +139,23 @@ that ties the two was found. So nothing is guessed: a game gets covers from Game
 
 | | |
 |---|---|
-| `source/app.cpp`, `app.h` | the menu: the shelf, a game's options, its slots and advanced options, the settings, the folder picker, the two receivers' screens |
+| `source/app.cpp`, `app.h` | the menu: the shelf, a game's options, its slots and advanced options, the settings, the folder picker, the file receiver's screen |
 | `source/library.cpp`, `library.h` | the card's layout, the two settings files, the list of games and its cache, slots of saved data |
 | `source/nup.cpp`, `nup.h` | what the menu reads of a NUP file |
 | `source/covers.cpp`, `covers.h` | cover files, `ids.txt`, the download |
-| `source/cover_share.cpp`, `cover_share.h` | covers from another console: the receiving half of toronja's cover share, and the answer to "which are missing" |
 | `source/transfer.cpp`, `transfer.h` | files from a computer: Toronja Transfer's protocol, received through a queue |
 | `source/images.cpp`, `stb_image.h` | JPEG and PNG, decoded and made smaller |
 | `source/ui_canvas.h`, `ui_views.h` | toronja's canvas, text, shelf, cases and buttons, as changed by `tools/adapt_ui.py` |
 | `source/font_baked.h` | the font, as glyph pictures (Aileron Regular, CC0) |
 | `source/main_switch.cpp` | the console: the framebuffer, the pad, the network, the keyboard, handing over to the game loader |
 | `preview/main.cpp` | the same menu on a PC, rendered to pictures |
-| `preview/transfer_test.cpp`, `cover_share_test.cpp` | the two receivers on a PC, with a folder for a card |
-| `tools/` | the font, the pretend card, the previews, the covers script, a sender of covers for trying the receiver |
+| `preview/transfer_test.cpp` | the file receiver on a PC, with a folder for a card |
+| `tools/` | the font, the pretend card, the previews, the covers script |
 
 ## Not tried on a console
 
-This was written and looked at through the previews, and the two receivers were tried on a PC against real senders (the
-program that sends to Toronja Transfer; `tools/send_covers_test.py`). Still to be seen on the console itself:
+This was written and looked at through the previews, and the file receiver was tried on a PC against a real sender (the
+program that sends to Toronja Transfer). Still to be seen on the console itself:
 
 - **Presenting**: the framebuffer on the console's window (as toronja's menu makes it), and how fast the shelf redraws, in
   software, at 1280x720.
@@ -178,8 +171,5 @@ program that sends to Toronja Transfer; `tools/send_covers_test.py`). Still to b
   card, whether the longest time with nothing written stays short, and which of the four numbers suit the card. The socket's
   buffer sizes are asked of the system and may be refused (the defaults are then used). The menu's own thread comes before the
   two that move a file, so the screen is redrawn only a few times a second meanwhile.
-- **Covers from another console**: the exchange itself (the broadcast, the question, the files, a damaged file refused) was
-  tried on a PC. Not tried: opening the direct wireless link from this program on this console, a Switch finding and joining
-  it, and the two ends of the companion and the menu together.
 - **Text**: the font has the Latin letters without accents (an accented letter is drawn as its plain one); a title in another
   script shows no text of its own, only its icon.

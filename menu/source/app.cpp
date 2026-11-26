@@ -8,7 +8,6 @@
 #include <cstring>
 #include <memory>
 
-#include "cover_share.h"
 #include "covers.h"
 #include "platform.h"
 #include "transfer.h"
@@ -28,7 +27,7 @@ constexpr int kSavesVisible = 6;
 // The rows of a game's options, of the settings.
 enum SheetRow { kSheetLog, kSheetMods, kSheetSaves, kSheetAdvanced };
 enum AdvancedRow { kAdvancedMemory, kAdvancedRoom };
-enum SettingRow { kSetFolder, kSetShelf, kSetCovers, kSetCases, kSetTheme, kSetDownload, kSetShare, kSetTransfer, kSetCap, kSetRescan };
+enum SettingRow { kSetFolder, kSetShelf, kSetCovers, kSetCases, kSetTheme, kSetDownload, kSetTransfer, kSetCap, kSetRescan };
 
 // What the two advanced numbers may be (docs/layout.md), and the steps the pad takes.
 constexpr int kMemoryLow = 2048, kMemoryHigh = 8992, kMemoryStep = 128;
@@ -210,7 +209,7 @@ float App::FramePause() const {
     if (mode == Mode::Transfer) {
         return Transfer::Look().busy ? 0.08f : 0.02f;
     }
-    return mode == Mode::CoverShare ? 0.03f : 0.0f;
+    return 0.0f;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -256,9 +255,6 @@ Request App::Update(const Input& in, float dt) {
         break;
     case Mode::Transfer:
         UpdateTransfer(in, dt);
-        break;
-    case Mode::CoverShare:
-        UpdateCoverShare(in);
         break;
     }
     return {};
@@ -754,10 +750,6 @@ std::vector<App::Row> App::SettingsRows() {
     const std::string status = Covers::Status();
     rows.push_back({"Download covers", Covers::Downloading() ? "Working..." : "A",
                     status.empty() ? std::string{"From GameTDB, for the games that covers/ids.txt has a code for. Needs internet access."} : status, false});
-    rows.push_back({"Covers from another console", "A",
-                    "For a console kept off the internet: a Switch that has internet access fetches the covers (nx2-flow-covers) and "
-                    "hands them over by local wireless.",
-                    false});
     rows.push_back({"Receive files from a computer", "A",
                     "Games and anything else, over the local network, from the program that sends to Toronja Transfer. ZL opens it from "
                     "the library too.",
@@ -795,11 +787,6 @@ void App::ChangeSetting(int row, int dir, bool press) {
     case kSetDownload:
         if (press && !Covers::StartDownload(games)) {
             Notice(Covers::Status(), true);
-        }
-        return;
-    case kSetShare:
-        if (press) {
-            OpenCoverShare();
         }
         return;
     case kSetTransfer:
@@ -980,63 +967,13 @@ void App::UpdateTransfer(const Input& in, float dt) {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Covers from another console
-
-void App::OpenCoverShare() {
-    Finish();
-    mode = Mode::CoverShare;
-    StartCoverShare();
-}
-
-void App::StartCoverShare() {
-    // What the other console is told when it asks: the games that have no cover file.
-    std::vector<CoverShare::Wanted> wanted;
-    for (const Game& game : games) {
-        if (!game.id.empty() && !Covers::HasFile(game)) {
-            wanted.push_back({game.id, Covers::CodeFor(game), game.title});
-        }
-    }
-    share_wanted = static_cast<int>(wanted.size());
-    Covers::EnsureFolders();
-    Platform::StartNetwork();
-    Platform::KeepAwake(true);
-    CoverShare::StartReceive(OnCard(kCovers), std::move(wanted));
-}
-
-void App::LeaveCoverShare() {
-    const unsigned stored = CoverShare::Stored();
-    CoverShare::Stop();
-    Platform::KeepAwake(false);
-    if (CoverShare::TakeArrived() || stored != 0) {
-        Covers::Reset();
-        made.clear();
-        Notice(Count(stored, "cover", "covers") + " received");
-    }
-    mode = Mode::Settings;
-}
-
-void App::UpdateCoverShare(const Input& in) {
-    if (in.b) {
-        LeaveCoverShare();
-        return;
-    }
-    if (in.a && !CoverShare::IsActive()) {
-        StartCoverShare();
-    }
-}
-
-// ---------------------------------------------------------------------------------------------
 // Drawing
 
 void App::Draw(Canvas& c) {
-    if (mode == Mode::Transfer || mode == Mode::CoverShare) {
-        // (no shelf behind these two: drawing it would take time from the threads at work)
+    if (mode == Mode::Transfer) {
+        // (no shelf behind this one: drawing it would take time from the threads at work)
         DrawBackdrop(c);
-        if (mode == Mode::Transfer) {
-            DrawTransfer(c);
-        } else {
-            DrawCoverShare(c);
-        }
+        DrawTransfer(c);
     } else {
         DrawShelfScreen(c);
         switch (mode) {
@@ -1560,42 +1497,6 @@ void App::DrawTransfer(Canvas& c) {
     font.Draw(c, x + 28, y + h - 20, "Every large file's figures are kept in /nx2-flow/transfer.log; the receiver's numbers are in /nx2-flow/menu.cfg.", 15,
               kColTextDim);
     DrawHints(c, {{"B", "Back"}});
-}
-
-void App::DrawCoverShare(Canvas& c) {
-    const int W = c.Width();
-    const int w = 900, x = (W - w) / 2, y = 34, h = 590;
-    c.FillRoundRect(x, y, w, h, 16, kColBg);
-    font.Draw(c, x + 28, y + 46, "Covers from another console", 26, kColText);
-    c.FillRect(x + 28, y + 64, w - 56, 1, kColLine);
-    DrawHelp(c, x + 28, y + 94, w - 56,
-             "On a Switch that has internet access, open nx2-flow-covers and choose to send the covers. The two consoles find each "
-             "other on the network they share; when nobody answers there, this console opens a direct wireless link and waits on it.");
-
-    const bool active = CoverShare::IsActive();
-    const std::string brief = CoverShare::Brief();
-    font.Draw(c, x + 28, y + 206, brief.empty() ? "Starting..." : brief, 34, CoverShare::Failed() && !active ? kColError : kColAccent);
-    int ty = y + 240;
-    for (const std::string& line : WrapLines(font, CoverShare::Detail(), 18, w - 56)) {
-        font.Draw(c, x + 28, ty, line, 18, kColText);
-        ty += 24;
-    }
-    const std::string asked = share_wanted == 0 ? std::string{"Every game here has a cover already: the other console is told so when it asks."}
-                                                : Count(share_wanted, "game here has", "games here have") +
-                                                      " no cover: the other console is told which when it asks.";
-    font.Draw(c, x + 28, y + 318, asked, 16, kColTextDim);
-    c.FillRect(x + 28, y + 334, w - 56, 1, kColLine);
-    int ly = y + 362;
-    for (const std::string& line : CoverShare::Lines()) {
-        font.Draw(c, x + 28, ly, font.Truncate(line, 15, w - 56), 15, kColTextDim);
-        ly += 25;
-    }
-    font.Draw(c, x + 28, y + h - 20, std::string{"Covers go to "} + kCovers + " on the card.", 15, kColTextDim);
-    if (active) {
-        DrawHints(c, {{"B", "Stop"}});
-    } else {
-        DrawHints(c, {{"A", "Wait again"}, {"B", "Back"}});
-    }
 }
 
 void App::DrawAsk(Canvas& c) {

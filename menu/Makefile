@@ -5,8 +5,8 @@
 #   make                 the program for the console (ounce-devkit): out/nx2-flow.nro
 #   make preview         a PC program that renders the menu's screens from a pretend card, and
 #                        the pictures themselves in out/preview/ (needs a PC g++ and Python + Pillow)
-#   make nettest         two PC programs that run the file receiver and the cover receiver with a
-#                        folder for a card, to try them against a sender with no console
+#   make nettest         a PC program that runs the file receiver with a folder for a card, to
+#                        try it against a sender with no console
 #   make font            source/font_baked.h again (tools/bake_font.py)
 #   make clean
 
@@ -17,7 +17,7 @@ endif
 TARGET   := nx2-flow
 VERSION  := 0.2.0
 OUT      := out
-SOURCES  := app cover_share covers images library nup transfer main_switch
+SOURCES  := app covers images library nup transfer main_switch
 HEADERS  := $(wildcard source/*.h)
 
 include $(DEVKITPRO)/libounce/switch2_rules
@@ -67,11 +67,10 @@ preview: $(OUT)/preview/preview$(EXE)
 	$(OUT)/preview/preview$(EXE) $(OUT)/preview/card $(OUT)/preview
 	$(PYTHON) tools/ppm_to_png.py $(OUT)/preview
 
-# The receivers themselves, as they run on the console, with a folder for a card.
+# The file receiver itself, as it runs on the console, with a folder for a card.
 nettest:
 	mkdir -p $(OUT)/preview
 	$(HOSTCXX) -std=gnu++20 -O2 -Wall -Isource preview/transfer_test.cpp source/transfer.cpp source/library.cpp source/nup.cpp source/images.cpp -o $(OUT)/preview/transfer_test$(EXE)
-	$(HOSTCXX) -std=gnu++20 -O2 -Wall -Isource preview/cover_share_test.cpp source/cover_share.cpp -o $(OUT)/preview/cover_share_test$(EXE)
 
 font:
 	$(PYTHON) tools/bake_font.py

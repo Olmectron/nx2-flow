@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 // The menu itself: the shelf of games, a game's options and its slots of saved data, the menu's
-// settings, and the two screens that bring things to the card (files from a computer, covers
-// from another console). It draws on a plain canvas and is told what was pressed, so the same
+// settings, and the screen that brings files to the card from a computer. It draws on a plain canvas and is told what was pressed, so the same
 // code runs on the console and renders the previews on a PC.
 
 #pragma once
@@ -44,7 +43,7 @@ public:
     float FramePause() const;
 
 private:
-    enum class Mode { Shelf, Sheet, Advanced, Saves, Settings, Picker, Transfer, CoverShare };
+    enum class Mode { Shelf, Sheet, Advanced, Saves, Settings, Picker, Transfer };
     /// A question put to the user over whatever is on screen, and what a yes does.
     enum class Ask { None, OpenAdvanced, DeleteSlot, MakeSlot, LeaveTransfer };
 
@@ -69,7 +68,6 @@ private:
     void UpdateSettings(const Input& in);
     void UpdatePicker(const Input& in);
     void UpdateTransfer(const Input& in, float dt);
-    void UpdateCoverShare(const Input& in);
     void UpdateAsk(const Input& in);
 
     void OpenSheet();
@@ -77,9 +75,6 @@ private:
     void PickerLook();
     void OpenTransfer();
     void LeaveTransfer();
-    void OpenCoverShare();
-    void StartCoverShare();
-    void LeaveCoverShare();
     void PutQuestion(Ask what, std::string title, std::string text, std::string yes, std::string no, bool warning = false);
 
     std::vector<Row> SheetRows();
@@ -108,7 +103,6 @@ private:
     void DrawSettings(SwitchFrontend::Ui::Canvas& c);
     void DrawPicker(SwitchFrontend::Ui::Canvas& c);
     void DrawTransfer(SwitchFrontend::Ui::Canvas& c);
-    void DrawCoverShare(SwitchFrontend::Ui::Canvas& c);
     void DrawAsk(SwitchFrontend::Ui::Canvas& c);
     void DrawBusy(SwitchFrontend::Ui::Canvas& c);
     /// `visible`: how many rows fit; more than that scroll, the focused one kept in sight.
@@ -178,9 +172,6 @@ private:
     std::uint64_t transfer_seen{};
     float transfer_speed{}; // Bytes a second, smoothed.
     float transfer_since{};
-
-    // Covers from another console.
-    int share_wanted{};
 
     std::string notice;
     bool notice_error{};

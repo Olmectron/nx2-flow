@@ -18,7 +18,6 @@
 #include <switch.h>
 
 #include "app.h"
-#include "cover_share.h"
 #include "platform.h"
 #include "transfer.h"
 
@@ -454,7 +453,6 @@ int main(int, char**) {
     }
     app->Finish();
     Transfer::Stop();
-    CoverShare::Stop();
     framebufferClose(&fb);
     return 0;
 }

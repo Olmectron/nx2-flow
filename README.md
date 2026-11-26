@@ -16,15 +16,14 @@ that runs the one you pick straight from its NUP file. Nothing is built for each
 
 **Work in progress.** It has been tried with few games and one setup (kaiHEN 20261117.1).
 
-## The three programs
+## The two programs
 
 | folder | program | what it is | license |
 |---|---|---|---|
-| `menu/` | `nx2-flow.nro` (Switch 2) | The shelf: lists the NUP files of a folder with their covers or icons, each game's options (detailed log, mod set, slot of saved data, advanced settings), receives files from a computer, receives covers from another console. | GPL-2.0-or-later |
+| `menu/` | `nx2-flow.nro` (Switch 2) | The shelf: lists the NUP files of a folder with their covers or icons, each game's options (detailed log, mod set, slot of saved data, advanced settings), receives files from a computer. | GPL-2.0-or-later |
 | `loader/` | `nx2-game.nro` (Switch 2) | The game loader: runs one NUP file. Started by the menu. | MIT (Zstandard's decoder in `third_party/`: BSD) |
-| `companion/` | `nx2-flow-covers.nro` (Switch) | Optional: downloads covers from the internet on a Switch and hands them to the menu by local wireless. | GPL-2.0-or-later |
 
-The menu and the companion are built from the interface of [toronja](https://github.com/Olmectron/toronja), hence their license.
+The menu is built from the interface of [toronja](https://github.com/Olmectron/toronja), hence its license.
 The loader is the runtime of [nx2-relink](https://github.com/Olmectron/nx2-relink) with no game built into it.
 
 `docs/layout.md` says what is where on the card and how the programs talk to one another.
@@ -56,8 +55,7 @@ Any picture can be a game's cover: put it on the card, named by the game's title
   (500 × 813, say), a whole wrap about 1.3 times as wide as it is tall (1300 × 1000).
 - A game with no cover stands as a case made of its own icon and name.
 
-The menu's Transfer screen takes the file from a computer; `menu/README.md` has the other ways to get covers (GameTDB, another
-console).
+The menu's Transfer screen takes the file from a computer; `menu/README.md` has the other way to get covers (GameTDB).
 
 ## What to know
 
@@ -74,5 +72,4 @@ console).
 
 ## Building
 
-Each folder has its own README. In short: devkitPro (devkitA64), ounce-devkit (libounce) for the two Switch 2 programs, libnx for
-the companion, Python 3.10 or newer for the loader's build script.
+Each folder has its own README. In short: devkitPro (devkitA64), ounce-devkit (libounce) for the two programs, Python 3.10 or newer for the loader's build script.

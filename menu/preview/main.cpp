@@ -9,16 +9,14 @@
 //
 // Output: one binary PPM per scene (tools/ppm_to_png.py makes PNGs of them).
 //
-// The two receivers (files from a computer, covers from another console) are stand-ins here:
-// they say what the scene needs them to say, and open no port on the PC. The receivers
-// themselves run on a PC too, for trying them against a sender: transfer_test.cpp and
-// cover_share_test.cpp.
+// The receiver of files from a computer is a stand-in here: it says what the scene needs it to
+// say, and opens no port on the PC. The receiver itself runs on a PC too, for trying it against
+// a sender: transfer_test.cpp.
 
 #include <cstdio>
 #include <string>
 
 #include "app.h"
-#include "cover_share.h"
 #include "platform.h"
 #include "transfer.h"
 
@@ -26,12 +24,6 @@ namespace {
 std::string g_address = "192.168.0.50";
 std::string g_typed; // What the keyboard "gives"; empty: no name given.
 Transfer::State g_transfer;
-struct {
-    bool active{}, failed{};
-    std::string brief, detail;
-    std::vector<std::string> lines;
-    unsigned stored{};
-} g_share;
 } // namespace
 
 namespace Platform {
@@ -68,43 +60,6 @@ State Look() {
     return g_transfer;
 }
 } // namespace Transfer
-
-namespace CoverShare {
-void StartReceive(std::string, std::vector<Wanted>) {
-    g_share.active = true;
-    g_share.failed = false;
-    g_share.brief = "Waiting";
-    g_share.detail = "Waiting for the other console: choose to send the covers there.";
-    g_share.lines = {g_share.detail};
-}
-void Stop() {
-    g_share.active = false;
-}
-bool IsActive() {
-    return g_share.active;
-}
-std::string Brief() {
-    return g_share.brief;
-}
-std::string Detail() {
-    return g_share.detail;
-}
-std::vector<std::string> Lines() {
-    return g_share.lines;
-}
-int Serial() {
-    return 0;
-}
-bool Failed() {
-    return g_share.failed;
-}
-unsigned Stored() {
-    return g_share.stored;
-}
-bool TakeArrived() {
-    return false;
-}
-} // namespace CoverShare
 
 namespace {
 
@@ -313,35 +268,8 @@ int main(int argc, char** argv) {
     run.Shot("29-picker-root");
     run.Press(Key('b'));
 
-    // covers from another console
-    run.Press(Key('D'), 6, 20);
-    run.Press(Key('a'), 30);
-    run.Shot("30-covers-waiting");
-    g_share.brief = "Asked";
-    g_share.detail = "The other console asked which covers are missing: 2 games. Waiting for it to come back with them...";
-    g_share.lines.push_back("Waiting for the other console nearby (direct wireless)...");
-    g_share.lines.push_back(g_share.detail);
-    run.Shot("31-covers-asked");
-    g_share.brief = "1 / 2";
-    g_share.detail = "Receiving covers";
-    g_share.stored = 1;
-    run.Shot("32-covers-arriving");
-    g_share.active = false;
-    g_share.brief = "2 received";
-    g_share.detail = "2 covers received.";
-    g_share.lines.push_back(g_share.detail);
-    g_share.stored = 2;
-    run.Shot("33-covers-received");
-    g_share.failed = true;
-    g_share.brief = "Failed";
-    g_share.detail = "Covers cannot be received: no sender on the network, and direct wireless is not available here (ldnInitialize 0xe401).";
-    g_share.lines = {"Waiting for the other console: choose to send the covers there.", g_share.detail};
-    g_share.stored = 0;
-    run.Shot("34-covers-failed");
-    run.Press(Key('b'));
-
     // files from a computer
-    run.Press(Key('D'), 20);
+    run.Press(Key('D'), 6, 20);
     run.Press(Key('a'), 30);
     run.Shot("35-transfer-waiting");
     g_transfer.connected = g_transfer.busy = true;

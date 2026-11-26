@@ -1,12 +1,10 @@
 # What is where, and how the programs talk
 
-Two homebrew programs for a Switch 2, both in one folder of the card so that the homebrew menu shows one entry, and a third for a
-Switch:
+Two homebrew programs for a Switch 2, both in one folder of the card so that the homebrew menu shows one entry:
 
 ```
 /switch/nx2-flow/nx2-flow.nro      the menu: lists the games, starts one, receives files from a computer
 /switch/nx2-flow/nx2-game.nro      the game loader: runs the game of one NUP file. Started by the menu, not by hand
-(on a Switch) nx2-flow-covers.nro  the companion: fetches covers from the internet and hands them over by local wireless
 ```
 
 ## On the card
@@ -88,48 +86,3 @@ size first, and at most `transfer_queue` blocks wait between the two: when the c
 socket, whose buffer is small (`transfer_rcvbuf_kb`), so the sender is held back by the connection itself. `transfer_kbps` caps the
 pace from the first byte. Every file of 8 MB or more leaves three lines in `/nx2-flow/transfer.log`: seconds, MB a second, the
 longest time with nothing written, how full the queue got, how long the writes took, and where the time went.
-
-## Covers by local wireless
-
-The companion for a Switch downloads covers and hands them to the menu by local wireless, with the protocol toronja uses between
-two consoles for the same thing (toronja's `cover_share`): the menu is the receiver, the companion the sender.
-
-**Unchanged from toronja**: port 28301; the sender's UDP broadcast `"TCOV?\0"` and the receiver's answer `"TCOV!\0"` when both are
-on one network; otherwise the receiver's own local wireless network (LDN: scene id 0x4356, the passphrase `ToronjaCovers001`, the
-user name `ToronjaCovers`, two nodes, local communication id -1), which the sender finds by a scan and joins; then one TCP
-connection to the receiver, on which the sender writes `"TCOV1\0"`, a u32 count (network order), and for each file
-`[u8 kind: 0 front, 1 wrap][u8 name length][name][u32 size][u32 FNV-1a of the bytes][the bytes]`, reading one byte back for each
-(`K` stored, `E` refused), and `[0xFF][0]` at the end. A name is letters and digits, one dot, and `jpg`, `jpeg` or `png`; at most 40
-characters; a file at most 6 MB. Fronts are stored in `/nx2-flow/covers`, wraps in `/nx2-flow/covers/full`.
-
-**Added, for the asking** (toronja's has no way to ask: its sender sends every cover it has). A sender may open its TCP
-connection with `"TCOVQ\0"` (six bytes, where `"TCOV1\0"` would be) and nothing else. The menu answers on that connection with
-the games of its library that have no cover file yet:
-
-```
-u32   count                                  (network order)
-count times:
-  u8  length, then the title id              16 hex digits, lower case
-  u8  length, then the GameTDB code          as covers/ids.txt has it; length 0 when the menu knows none
-  u8  length, then the game's title          UTF-8, cut to 255 bytes
-```
-
-After the answer the sender does one of two things, and the menu takes either:
-
-- goes on at once, on the same connection, with the unchanged stream (`"TCOV1\0"` and what follows; the menu waits fifteen
-  seconds for it, then takes the sender to have left);
-- closes the connection, fetches what was asked for (over a direct wireless link it has no internet until it leaves), and comes
-  back with the unchanged stream on a new connection. The menu keeps waiting, on the same network (its own local wireless one
-  stays up), for fifteen minutes after a question.
-
-**What to name the files.** The menu takes a cover as a game's by either name: `<title id>.jpg` (the 16 hex digits, as given
-in the answer) or `<GameTDB code>.jpg`. The title id is the sure one: it needs no line in `ids.txt`. A sender that never asks and
-sends everything it has, as toronja's does, works too: files whose names match no game are stored and not shown.
-
-A menu that isn't asked (an older sender) behaves exactly as toronja's receiver does.
-
-## The NUP container
-
-The format is the one `tools/nup.py` of nx2-relink reads: a superblock, a table of contents (packages, folders, files, names),
-then the files' bytes. A package has a title id, a kind (0 the game, 1 an update, 2 added content), a version, and a block of
-facts: its NPDM, its title, its publisher, its display version, its icon (a JPEG).
