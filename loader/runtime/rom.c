@@ -12,6 +12,7 @@
 #include <switch.h>
 
 #include "nx2.h"
+#include "fs_raw.h"
 
 #ifndef NX2_NAME
 #define NX2_NAME "game"
@@ -36,10 +37,12 @@ typedef struct {
 } Image;
 static Image images[ROM_IMAGES];
 static u32 image_count = 1, rom_logged;
+static FsFileSystem *rom_sd;
 
 static void image_open(Image *im, char *path) {
     FsFileSystem *sd = fsdevGetDeviceFileSystem("sdmc");
     if (!sd) return;
+    rom_sd = sd;
     if (!fsFsOpenFile(sd, path, FsOpenMode_Read, &im->part[0]) && R_SUCCEEDED(fsFileGetSize(&im->part[0], &im->size))) {
         im->ok = 1, im->parts = 1, im->part_size = im->size;
         return;
@@ -137,16 +140,19 @@ static u32 rom_read(Image *im, u64 offset, u8 *to, u64 size, u64 *got) {
         // in, the thread reading and the thread mapping both mid-way; 2026-11-24). So the read fills memory of the port's, one
         // thread at a time, and what arrived is copied into the game's: the game's memory is never locked for long.
         static u8 bounce[4 << 20] __attribute__((aligned(0x1000)));
-        static u32 bounce_lock;
+        static u32 bounce_lock, rom_read_lock;
         u32 rc = 0;
         if (nx2_bounce) {
             if (take > sizeof bounce) take = sizeof bounce;
-            while (__atomic_exchange_n(&bounce_lock, 1, __ATOMIC_ACQUIRE)) svcSleepThread(0);
-            rc = fsFileRead(&im->part[part], (s64)in, bounce, take, FsReadOption_None, &n);
+            nx2_fs_lock(&bounce_lock);
+            rc = nx2_fs_file_read(&im->part[part], (s64)in, bounce, take, &n);
             for (u64 k = 0; k < n; k++) to[k] = bounce[k];
-            __atomic_store_n(&bounce_lock, 0, __ATOMIC_RELEASE);
+            nx2_fs_unlock(&bounce_lock);
         } else {
-            rc = fsFileRead(&im->part[part], (s64)in, to, take, FsReadOption_None, &n);
+            if (take > (4u << 20)) take = 4u << 20;
+            nx2_fs_lock(&rom_read_lock);
+            rc = nx2_fs_file_read(&im->part[part], (s64)in, to, take, &n);
+            nx2_fs_unlock(&rom_read_lock);
         }
         *got += n;
         if (rc) return rc;
@@ -354,7 +360,7 @@ static u32 mods_file_read(u32 which, u64 offset, u8 *to, u64 size, u64 *got) {
     static char path[FS_MAX_PATH];
     u32 rc = 0;
     *got = 0;
-    while (__atomic_exchange_n(&mods.lock, 1, __ATOMIC_ACQUIRE)) svcSleepThread(0);
+    nx2_fs_lock(&mods.lock);
     int slot = -1, oldest = -1;
     for (int k = 0; k < MODS_OPEN; k++)
         if (mods.kept[k].open && mods.kept[k].which == which) slot = k;
@@ -367,13 +373,12 @@ static u32 mods_file_read(u32 which, u64 offset, u8 *to, u64 size, u64 *got) {
         }
     if (slot < 0) {
         slot = oldest;
-        if (mods.kept[slot].open) fsFileClose(&mods.kept[slot].file), mods.kept[slot].open = 0;
+        if (mods.kept[slot].open) nx2_fs_file_close(&mods.kept[slot].file), mods.kept[slot].open = 0;
         u32 n = 0;
         for (const char *p = home; *p; p++) path[n++] = *p;
         for (const char *p = mods.paths + mods.files[which].path; *p && n < sizeof path - 1; p++) path[n++] = *p;
         path[n] = 0;
-        FsFileSystem *sd = fsdevGetDeviceFileSystem("sdmc");
-        rc = sd ? fsFsOpenFile(sd, path, FsOpenMode_Read, &mods.kept[slot].file) : 0x2EE202;
+        rc = rom_sd ? nx2_fs_open_file(rom_sd, path, FsOpenMode_Read, &mods.kept[slot].file) : 0x2EE202u;
         if (!rc) mods.kept[slot].open = 1, mods.kept[slot].which = which;
     }
     if (!rc && !mods.files[which].read) {
@@ -383,10 +388,10 @@ static u32 mods_file_read(u32 which, u64 offset, u8 *to, u64 size, u64 *got) {
     if (!rc) {
         mods.kept[slot].age = ++mods.clock;
         u64 n = 0;
-        rc = fsFileRead(&mods.kept[slot].file, (s64)offset, to, size, FsReadOption_None, &n);
+        rc = nx2_fs_file_read(&mods.kept[slot].file, (s64)offset, to, size, &n);
         *got = n;
     }
-    __atomic_store_n(&mods.lock, 0, __ATOMIC_RELEASE);
+    nx2_fs_unlock(&mods.lock);
     return rc;
 }
 // size bytes of the storage as the game is given it, at offset (in range): the image's own, but for its table of files, which is
@@ -662,20 +667,28 @@ static int cache_folder(char path[FS_MAX_PATH], u16 index) {
     return 1;
 }
 
+static u32 cache_dir_lock;
 static u32 ensure_cache_directory(u16 index) {
     if (!host_fs) return 0x2EE202;
     char root[FS_MAX_PATH] = {0};
     char path[FS_MAX_PATH] = {0};
     cache_root_path(root);
     if (!cache_folder(path, index)) return 0x2EE202;
+    nx2_fs_lock(&cache_dir_lock);
     FsDirEntryType type;
-    if (R_SUCCEEDED(fsFsGetEntryType(host_fs, path, &type)))
+    if (R_SUCCEEDED(nx2_fs_get_entry_type(host_fs, path, &type))) {
+        nx2_fs_unlock(&cache_dir_lock);
         return type == FsDirEntryType_Dir ? 0 : 0x402;
-    u32 rc = fsFsCreateDirectory(host_fs, root);
-    if (rc && rc != 0x402) return rc;
-    rc = fsFsCreateDirectory(host_fs, path);
-    if (rc == 0x402 && R_SUCCEEDED(fsFsGetEntryType(host_fs, path, &type)) && type == FsDirEntryType_Dir)
+    }
+    u32 rc = nx2_fs_create_directory(host_fs, root);
+    if (rc && rc != 0x402) {
+        nx2_fs_unlock(&cache_dir_lock);
+        return rc;
+    }
+    rc = nx2_fs_create_directory(host_fs, path);
+    if (rc == 0x402 && R_SUCCEEDED(nx2_fs_get_entry_type(host_fs, path, &type)) && type == FsDirEntryType_Dir)
         rc = 0;
+    nx2_fs_unlock(&cache_dir_lock);
     nx2_log("[save] creating cache index %u in %s: result %x\n", (u64)index, path, (u64)rc);
     return rc;
 }

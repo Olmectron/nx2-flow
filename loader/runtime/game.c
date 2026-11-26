@@ -21,6 +21,7 @@
 #include <zstd.h>  // (third_party/zstd: Zstandard's own decoder)
 
 #include "nx2.h"
+#include "fs_raw.h"
 #include "nupparts.h"  // (a NUP file kept in parts, for a card that takes no file of 4 GB)
 void nx2_log(const char *fmt, ...);
 void nx2_log_flush(void);
@@ -65,10 +66,8 @@ static void w64(u8 *p, u64 v) { w32(p, (u32)v), w32(p + 4, (u32)(v >> 32)); }
 // ---------------------------------------------------------------- the NUP file
 static struct {
     // (the file's parts, in their order, each open: one for a whole file. A read may begin in one and end in the next.)
-    struct {
-        FsFile file;
-        u64 size;
-    } parts[NUP_PARTS_MAX];
+    Nx2FsPart parts[NUP_PARTS_MAX];
+    FsFileSystem *sd;
     u32 nparts;
     u64 size;
     u8 *toc;
@@ -76,25 +75,12 @@ static struct {
     u32 npackages;
     const u8 *packages, *dirs, *files, *pool;
 } nup;
+static u32 nup_lock;
 
 // so many of the file's bytes, from a place in it: 0, or the file system's word for what went wrong
+// (called from game threads and the unpacker thread concurrently: raw CMIF + atomic spinlock, never libounce's SessionMgr/mutexLock)
 static u32 nup_read(u64 at, void *to, u64 size) {
-    u8 *out = to;
-    u32 k = 0;
-    u64 in = at;  // (the part the place is in, and the place in that part)
-    while (k < nup.nparts && in >= nup.parts[k].size) in -= nup.parts[k++].size;
-    while (size) {
-        if (k >= nup.nparts) return 0x2EE202;
-        const u64 left = nup.parts[k].size - in;
-        u64 take = size < (4u << 20) ? size : 4u << 20, got = 0;
-        if (take > left) take = left;
-        const u32 rc = fsFileRead(&nup.parts[k].file, (s64)in, out, take, FsReadOption_None, &got);
-        if (rc) return rc;
-        if (got != take) return 0x2EE202;
-        in += take, out += take, size -= take;
-        if (in == nup.parts[k].size) k++, in = 0;
-    }
-    return 0;
+    return nx2_fs_read_parts(nup.parts, nup.nparts, &nup_lock, at, to, size);
 }
 
 typedef struct {
@@ -134,6 +120,7 @@ static s64 nup_find(u32 dir, const char *name) {
 
 static int nup_open(const char *path) {
     FsFileSystem *sd = fsdevGetDeviceFileSystem("sdmc");
+    nup.sd = sd;
     static char inner[FS_MAX_PATH];
     // The file may be kept in parts (nupparts.h says which names are one game's): what is named is the whole file, the first
     // part, or a folder that holds the parts. (A folder the console itself takes for one file, as the ones it makes for a file
@@ -813,7 +800,7 @@ static struct {
 static u64 kept_clock;
 static u32 kept_lock;
 static u32 loose_read(u64 which, u64 offset, u8 *to, u64 size) {
-    while (__atomic_exchange_n(&kept_lock, 1, __ATOMIC_ACQUIRE)) svcSleepThread(0);
+    nx2_fs_lock(&kept_lock);
     int slot = -1, oldest = -1;
     for (int k = 0; k < OPEN; k++)
         if (kept[k].open && kept[k].at == which) slot = k;
@@ -827,18 +814,20 @@ static u32 loose_read(u64 which, u64 offset, u8 *to, u64 size) {
     u32 rc = 0;
     if (slot < 0) {
         slot = oldest;
-        if (kept[slot].open) fsFileClose(&kept[slot].file), kept[slot].open = 0;
-        static char path[FS_MAX_PATH];
-        memset(path, 0, sizeof path);
-        strncpy(path, roms[0].loose + which, sizeof path - 1);
-        rc = fsFsOpenFile(fsdevGetDeviceFileSystem("sdmc"), path, FsOpenMode_Read, &kept[slot].file);
+        if (kept[slot].open) nx2_fs_file_close(&kept[slot].file), kept[slot].open = 0;
+        rc = nup.sd ? nx2_fs_open_file(nup.sd, roms[0].loose + which, FsOpenMode_Read, &kept[slot].file) : 0x2EE202u;
         if (!rc) kept[slot].open = 1, kept[slot].at = which;
     }
-    u64 got = 0;
-    if (!rc) rc = fsFileRead(&kept[slot].file, (s64)offset, to, size, FsReadOption_None, &got);
-    if (!rc && got != size) rc = 0x2EE202;
+    u64 done = 0;
+    while (!rc && done < size) {
+        const u64 take = (size - done) < (4u << 20) ? (size - done) : (4u << 20);
+        u64 got = 0;
+        rc = nx2_fs_file_read(&kept[slot].file, (s64)(offset + done), to + done, take, &got);
+        if (!rc && got != take) rc = 0x2EE202u;
+        done += take;
+    }
     if (!rc) kept[slot].age = ++kept_clock;
-    __atomic_store_n(&kept_lock, 0, __ATOMIC_RELEASE);
+    nx2_fs_unlock(&kept_lock);
     return rc;
 }
 
