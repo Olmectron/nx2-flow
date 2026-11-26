@@ -657,8 +657,8 @@ static void send_sync(u64 *r, const char *module, u64 off, int log) {
         m[4] = 1, m[5] = 0;  // one word of data (the handle's descriptor is kept)
     }
 #endif
-    const u8 *a = payload(m, "SFCO");
-    u32 result = a ? rd32(a + 8) : 0, got = rc ? 0 : answer_handle(m);
+    const u8 *a = q ? payload(m, "SFCO") : NULL;
+    u32 result = a ? rd32(a + 8) : (!q && type >= 16 ? short_result(m) : 0), got = rc ? 0 : answer_handle(m);
     if (is_sm && cmd == 1 && !rc && !got) {
         const u32 said = q ? result : short_result(m);
         if (said == 0x1015) {
