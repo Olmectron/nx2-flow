@@ -30,6 +30,9 @@ The loader is the runtime of [nx2-relink](https://github.com/Olmectron/nx2-relin
 
 ## On the card
 
+The two programs, built, are in the [latest release](https://github.com/Olmectron/nx2-flow/releases/latest): unzip it onto the
+card's root.
+
 ```
 /switch/nx2-flow/nx2-flow.nro      the menu (what the homebrew menu shows)
 /switch/nx2-flow/nx2-game.nro      the game loader
