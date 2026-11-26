@@ -11,16 +11,19 @@
 
 #include <arpa/inet.h>
 #include <netdb.h>
+#include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
 #include <switch.h>
 
 #include "app.h"
+#include "cover_share.h"
 #include "platform.h"
+#include "transfer.h"
 
 // ---------------------------------------------------------------------------------------------
-// The network: only for covers, only when asked (Settings, Download covers)
+// The network: only when asked (covers downloaded or received, files from a computer)
 
 namespace Platform {
 namespace {
@@ -29,7 +32,14 @@ bool g_sockets = false;
 
 bool Sockets() {
     if (!g_sockets) {
-        g_sockets = R_SUCCEEDED(socketInitializeDefault());
+        // Room for the buffers the file receiver may ask for (menu.cfg's transfer_rcvbuf_kb goes
+        // up to 2048 KB) and for sending a file back at a good pace; the defaults if that is refused.
+        SocketInitConfig config = *socketGetDefaultInitConfig();
+        config.tcp_tx_buf_size = 0x40000;
+        config.tcp_rx_buf_size = 0x40000;
+        config.tcp_tx_buf_max_size = 0x100000;
+        config.tcp_rx_buf_max_size = 0x200000;
+        g_sockets = R_SUCCEEDED(socketInitialize(&config)) || R_SUCCEEDED(socketInitializeDefault());
     }
     return g_sockets;
 }
@@ -269,6 +279,46 @@ bool Download(const std::string& url, const std::string& to_file, std::string& e
     return false;
 }
 
+bool StartNetwork() {
+    return Sockets();
+}
+
+std::string Address() {
+    if (!Sockets()) {
+        return {};
+    }
+    in_addr address{};
+    address.s_addr = gethostid();
+    if (address.s_addr == 0 || address.s_addr == htonl(INADDR_LOOPBACK)) {
+        return {};
+    }
+    return inet_ntoa(address);
+}
+
+void KeepAwake(bool on) {
+    appletSetAutoSleepDisabled(on);
+}
+
+bool AskText(const std::string& what_for, const std::string& initial, std::string& out) {
+    SwkbdConfig keyboard;
+    if (R_FAILED(swkbdCreate(&keyboard, 0))) {
+        return false;
+    }
+    swkbdConfigMakePresetDefault(&keyboard);
+    swkbdConfigSetHeaderText(&keyboard, what_for.c_str());
+    swkbdConfigSetGuideText(&keyboard, what_for.c_str());
+    swkbdConfigSetInitialText(&keyboard, initial.c_str());
+    swkbdConfigSetStringLenMax(&keyboard, 32);
+    char text[200] = {};
+    const Result result = swkbdShow(&keyboard, text, sizeof text);
+    swkbdClose(&keyboard);
+    if (R_FAILED(result) || text[0] == 0) {
+        return false;
+    }
+    out = text;
+    return true;
+}
+
 } // namespace Platform
 
 // ---------------------------------------------------------------------------------------------
@@ -364,8 +414,10 @@ int main(int, char**) {
         in.b = pressed & HidNpadButton_B;
         in.x = pressed & HidNpadButton_X;
         in.y = pressed & HidNpadButton_Y;
-        in.l = pressed & (HidNpadButton_L | HidNpadButton_ZL);
-        in.r = pressed & (HidNpadButton_R | HidNpadButton_ZR);
+        in.l = pressed & HidNpadButton_L;
+        in.r = pressed & HidNpadButton_R;
+        in.zl = pressed & HidNpadButton_ZL;
+        in.zr = pressed & HidNpadButton_ZR;
         in.plus = pressed & HidNpadButton_Plus;
         in.minus = pressed & HidNpadButton_Minus;
         in.up = up.Step(pressed & HidNpadButton_AnyUp, held & HidNpadButton_AnyUp, dt);
@@ -378,11 +430,14 @@ int main(int, char**) {
             break;
         }
         if (request.kind == Flow::Request::Kind::Launch) {
-            // The game loader, started next by the homebrew loader with the container to run and
-            // this menu to come back to (docs/layout.md). Each argument in quotes: a file's name
-            // has spaces.
+            // The game loader, started next by the homebrew loader with the container to run,
+            // this menu to come back to and, when the game's settings have one, the room the
+            // loader is to keep (docs/layout.md). Each argument in quotes: a file's name has spaces.
             const std::string loader = Flow::OnCard(Flow::kGameNro);
-            const std::string args = "\"" + loader + "\" \"" + Flow::OnCard(request.nup) + "\" \"menu=" + Flow::OnCard(Flow::kMenuNro) + "\"";
+            std::string args = "\"" + loader + "\" \"" + Flow::OnCard(request.nup) + "\" \"menu=" + Flow::OnCard(Flow::kMenuNro) + "\"";
+            if (!request.room.empty()) {
+                args += " \"room=" + request.room + "\"";
+            }
             if (!envHasNextLoad() || R_FAILED(envSetNextLoad(loader.c_str(), args.c_str()))) {
                 Say(fb, *canvas, pad, "This homebrew loader can't start another program after this one, so the game can't be started from here.");
                 continue;
@@ -391,8 +446,15 @@ int main(int, char**) {
         }
         app->Draw(*canvas);
         Present(fb, *canvas);
+        // While a file is moving the screen is redrawn a few times a second: this thread comes
+        // before the ones that move it, so what it doesn't take is theirs.
+        if (const float pause = app->FramePause(); pause > 0.0f) {
+            svcSleepThread(static_cast<s64>(pause * 1e9f));
+        }
     }
     app->Finish();
+    Transfer::Stop();
+    CoverShare::Stop();
     framebufferClose(&fb);
     return 0;
 }

@@ -139,6 +139,12 @@ def main():
         os.makedirs(os.path.join(folder, d), exist_ok=True)
     for name in ('log.txt', 'crash.txt'):
         open(os.path.join(folder, name), 'w').write('a pretend file, for the previews\n')
+    # and its saved data: the default slot and two more, the game set to use one of those
+    for slot in ('save', os.path.join('saves', 'second run'), os.path.join('saves', 'before the last door')):
+        os.makedirs(os.path.join(folder, slot, 'profile'), exist_ok=True)
+        open(os.path.join(folder, slot, 'progress.bin'), 'wb').write(slot.encode() * 4000)
+        open(os.path.join(folder, slot, 'profile', 'settings.bin'), 'wb').write(b'pretend' * 100)
+    open(os.path.join(folder, 'game.cfg'), 'w', newline='\n').write('save=second run\n')
     print(f'{len(GAMES)} pretend games in {games}')
 
 

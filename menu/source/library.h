@@ -54,6 +54,7 @@ struct Game {
     std::string version;
     std::string note;      // "1 update, 2 added contents" and the like.
     std::string error;     // Why it can't be started; empty when it can.
+    std::string slot;      // The slot of saved data in use (game.cfg's "save"); empty: "default".
     // The container's own icon: decoded when first shown.
     std::vector<SwitchFrontend::Ui::u32> icon;
     int icon_size{};
@@ -74,6 +75,20 @@ void LoadIcon(Game& game, int& budget);
 
 /// The sets of mods a game has: the folders of <game folder>/modsets, by name.
 std::vector<std::string> ModSets(const Game& game);
+
+/// The slots of saved data a game has besides "default": the folders of <game folder>/saves.
+std::vector<std::string> SaveSlots(const Game& game);
+/// Where a slot's data is, as a path of the card. "" and "default" are <game folder>/save.
+std::string SlotFolder(const Game& game, const std::string& slot);
+/// A name as a slot may have it: letters, digits, spaces, "-", "_" and ".", at most 32 of
+/// them, and not "default". Empty when nothing usable is left of what was typed.
+std::string CleanSlotName(const std::string& typed);
+
+/// A folder and everything in it, copied to a folder that isn't there yet. False, with why,
+/// when something couldn't be read or written (what was copied until then stays).
+bool CopyFolder(const std::string& from_card_path, const std::string& to_card_path, std::string& error);
+/// A folder and everything in it, deleted.
+bool RemoveFolder(const std::string& card_path);
 
 std::string HumanSize(std::uint64_t bytes);
 

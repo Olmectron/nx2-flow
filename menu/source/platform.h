@@ -16,4 +16,17 @@ bool HasNetwork();
 /// when it couldn't (a 404 is no error to tell: the thing isn't there).
 bool Download(const std::string& url, const std::string& to_file, std::string& error);
 
+/// Makes the machine's sockets ready (the console's are a service to open). False when there are none.
+bool StartNetwork();
+
+/// The machine's address on the network it is on, as text; empty when it is on none.
+std::string Address();
+
+/// Keeps the console from going to sleep on its own while something long is under way.
+void KeepAwake(bool on);
+
+/// Asks the user for a line of text with the machine's own keyboard. False when nothing was
+/// given: the user backed out, or there is no keyboard to show.
+bool AskText(const std::string& what_for, const std::string& initial, std::string& out);
+
 } // namespace Platform

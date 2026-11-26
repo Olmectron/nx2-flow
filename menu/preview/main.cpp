@@ -8,12 +8,31 @@
 //   ./preview <card folder> <output folder>
 //
 // Output: one binary PPM per scene (tools/ppm_to_png.py makes PNGs of them).
+//
+// The two receivers (files from a computer, covers from another console) are stand-ins here:
+// they say what the scene needs them to say, and open no port on the PC. The receivers
+// themselves run on a PC too, for trying them against a sender: transfer_test.cpp and
+// cover_share_test.cpp.
 
 #include <cstdio>
 #include <string>
 
 #include "app.h"
+#include "cover_share.h"
 #include "platform.h"
+#include "transfer.h"
+
+namespace {
+std::string g_address = "192.168.0.50";
+std::string g_typed; // What the keyboard "gives"; empty: no name given.
+Transfer::State g_transfer;
+struct {
+    bool active{}, failed{};
+    std::string brief, detail;
+    std::vector<std::string> lines;
+    unsigned stored{};
+} g_share;
+} // namespace
 
 namespace Platform {
 bool HasNetwork() {
@@ -22,7 +41,70 @@ bool HasNetwork() {
 bool Download(const std::string&, const std::string&, std::string&) {
     return false;
 }
+bool StartNetwork() {
+    return true;
+}
+std::string Address() {
+    return g_address;
+}
+void KeepAwake(bool) {}
+bool AskText(const std::string&, const std::string&, std::string& out) {
+    out = g_typed;
+    return !g_typed.empty();
+}
 } // namespace Platform
+
+namespace Transfer {
+void Start(const Tuning& tuning) {
+    g_transfer.running = g_transfer.listening = true;
+    g_transfer.queue_size = tuning.queue;
+    g_transfer.lines = {"Listening on port 28302 (blocks of " + std::to_string(tuning.block_kb) + " KB, a queue of " +
+                        std::to_string(tuning.queue) + ", no cap)"};
+}
+void Stop() {
+    g_transfer.running = g_transfer.listening = g_transfer.connected = g_transfer.busy = false;
+}
+State Look() {
+    return g_transfer;
+}
+} // namespace Transfer
+
+namespace CoverShare {
+void StartReceive(std::string, std::vector<Wanted>) {
+    g_share.active = true;
+    g_share.failed = false;
+    g_share.brief = "Waiting";
+    g_share.detail = "Waiting for the other console: choose to send the covers there.";
+    g_share.lines = {g_share.detail};
+}
+void Stop() {
+    g_share.active = false;
+}
+bool IsActive() {
+    return g_share.active;
+}
+std::string Brief() {
+    return g_share.brief;
+}
+std::string Detail() {
+    return g_share.detail;
+}
+std::vector<std::string> Lines() {
+    return g_share.lines;
+}
+int Serial() {
+    return 0;
+}
+bool Failed() {
+    return g_share.failed;
+}
+unsigned Stored() {
+    return g_share.stored;
+}
+bool TakeArrived() {
+    return false;
+}
+} // namespace CoverShare
 
 namespace {
 
@@ -50,15 +132,28 @@ struct Run {
     Flow::App app;
     Canvas canvas;
     std::string out;
+    Flow::Request last;
 
     /// A press, then time for what it set moving to come to rest (and for covers to be decoded).
     void Press(Flow::Input in, int frames = 90) {
-        app.Update(in, 1.0f / 60);
+        last = app.Update(in, 1.0f / 60);
         app.Draw(canvas);
         for (int k = 1; k < frames; ++k) {
             app.Update({}, 1.0f / 60);
             app.Draw(canvas);
         }
+    }
+
+    /// A few of the same press.
+    void Press(Flow::Input in, int times, int frames) {
+        for (int k = 0; k < times; ++k) {
+            Press(in, frames);
+        }
+    }
+
+    /// Time alone: for a note to go.
+    void Wait() {
+        Press({}, 400);
     }
 
     void Shot(const char* name) {
@@ -76,6 +171,7 @@ Flow::Input Key(char which) {
     case 'y': in.y = true; break;
     case 'l': in.l = true; break;
     case 'r': in.r = true; break;
+    case 'z': in.zl = true; break;
     case '+': in.plus = true; break;
     case '-': in.minus = true; break;
     case 'U': in.up = true; break;
@@ -99,8 +195,7 @@ int main(int argc, char** argv) {
     run.out = argv[2];
     run.app.Start();
     run.Press({}, 240);
-    run.Press(Key('R'));
-    run.Press(Key('R'));
+    run.Press(Key('R'), 2, 90);
     run.Shot("01-shelf");
     run.Press(Key('x'));
     run.Shot("02-flipped");
@@ -113,85 +208,200 @@ int main(int argc, char** argv) {
         run.Shot(name);
     }
     run.Press(Key('r'), 400);
-    // a game's options: the first game of the pretend card has two sets of mods
-    for (int k = 0; k < 8; ++k) {
-        run.Press(Key('L'), 30);
-    }
+
+    // a game's options: the second game of the pretend card has two sets of mods and three slots of saved data
+    run.Press(Key('L'), 8, 30);
     run.Press(Key('R'), 60);
+    run.Shot("04-shelf-slot-in-use");
     run.Press(Key('y'));
-    run.Shot("04-options");
+    run.Shot("05-options");
     run.Press(Key('a'));
     run.Press(Key('D'));
     run.Press(Key('R'));
+    run.Shot("06-options-changed");
+
+    // its slots of saved data
     run.Press(Key('D'));
-    run.Press(Key('R'));
-    run.Press(Key('R'));
-    run.Shot("05-options-changed");
-    // put back, so that a second run of the preview starts from the same card
-    run.Press(Key('L'));
-    run.Press(Key('L'));
-    run.Press(Key('U'));
-    run.Press(Key('L'));
-    run.Press(Key('U'));
+    run.Shot("07-options-saved-data");
     run.Press(Key('a'));
-    run.Press(Key('b'));
-    // the file that isn't a container
-    for (int k = 0; k < 2; ++k) {
-        run.Press(Key('R'), 60);
-    }
+    run.Shot("08-slots");
+    run.Press(Key('D'), 1, 20); // to "New empty slot"
+    g_typed = "Hard mode / try 2"; // (the slash can't be in a folder's name: it is left out)
     run.Press(Key('a'), 30);
-    run.Shot("06-not-a-container");
-    for (int k = 0; k < 4; ++k) {
-        run.Press(Key('R'), 60);
-    }
-    run.Shot("06-no-cover");
-    run.Press({}, 400);
+    run.Shot("09-slots-new-named");
+    run.Wait();
+    run.Press(Key('D'), 8, 20); // to "Copy ... into a new slot"
+    g_typed.clear();            // no name comes back from the keyboard
+    run.Press(Key('a'), 30);
+    run.Shot("10-slots-no-name-given");
+    run.Press(Key('a'), 1); // yes: one frame, the one that says it is copying
+    run.Shot("11-slots-copying");
+    run.Press({}, 30);
+    run.Shot("12-slots-copied");
+    run.Wait();
+    run.Press(Key('x'), 30);
+    run.Shot("13-slots-delete-question");
+    run.Press(Key('a'), 30);
+    run.Shot("14-slots-deleted");
+    run.Wait();
+    run.Press(Key('U'), 8, 20);
+    run.Press(Key('x'), 30);
+    run.Shot("15-slots-default-stays");
+    run.Wait();
+    run.Press(Key('D'), 2, 20);
+    run.Press(Key('a'), 30); // another slot is put in use
+    run.Shot("16-slots-picked");
+    run.Wait();
+    run.Press(Key('b'));
+
+    // the advanced options, behind their warning
+    run.Press(Key('D'));
+    run.Press(Key('a'), 30);
+    run.Shot("17-advanced-warning");
+    run.Press(Key('a'));
+    run.Shot("18-advanced");
+    run.Press(Key('L'), 6, 10); // memory: from automatic down from the top
+    run.Press(Key('D'));
+    run.Press(Key('R'), 9, 10); // room: from automatic up from the bottom
+    run.Shot("19-advanced-set");
+    run.Press(Key('b'));
+    run.Shot("20-options-advanced-set");
+    run.Press(Key('b'));
+    // what starting the game would hand over
+    run.Press(Key('a'), 1);
+    std::printf("launch: kind %d, nup \"%s\", room \"%s\"\n", static_cast<int>(run.last.kind), run.last.nup.c_str(), run.last.room.c_str());
+    // and back to automatic, with X
+    run.Press(Key('y'));
+    run.Press(Key('D'), 3, 10);
+    run.Press(Key('a'), 30);
+    run.Press(Key('a'));
+    run.Press(Key('x'), 30);
+    run.Shot("21-advanced-reset");
+    run.Press(Key('D'));
+    run.Press(Key('x'), 30);
+    run.Wait();
+    run.Press(Key('b'));
+    run.Press(Key('b'));
+    run.Press(Key('a'), 1);
+    std::printf("launch: kind %d, nup \"%s\", room \"%s\"\n", static_cast<int>(run.last.kind), run.last.nup.c_str(), run.last.room.c_str());
+
+    // the file that isn't a container
+    run.Press(Key('R'), 2, 60);
+    run.Press(Key('a'), 30);
+    run.Shot("22-not-a-container");
+    run.Press(Key('R'), 4, 60);
+    run.Shot("23-no-cover");
+    run.Wait();
+
     // the menu's own settings, and the folder picker
     run.Press(Key('-'));
-    run.Shot("07-settings");
-    for (int k = 0; k < 5; ++k) {
-        run.Press(Key('D'), 20);
-    }
+    run.Shot("24-settings");
+    run.Press(Key('D'), 5, 20);
     run.Press(Key('a'), 30);
-    run.Shot("08-settings-download");
-    run.Press({}, 400);
-    for (int k = 0; k < 5; ++k) {
-        run.Press(Key('U'), 20);
-    }
+    run.Shot("25-settings-download");
+    run.Wait();
+    run.Press(Key('D'), 3, 20);
+    run.Press(Key('R'), 4, 20);
+    run.Shot("26-settings-receiver-pace");
+    run.Press(Key('L'), 4, 20);
+    run.Press(Key('U'), 8, 20);
     run.Press(Key('a'));
-    run.Shot("09-picker");
+    run.Shot("27-picker");
     run.Press(Key('b'));
-    run.Shot("10-picker-up");
+    run.Shot("28-picker-up");
     run.Press(Key('b'));
-    run.Shot("11-picker-root");
+    run.Shot("29-picker-root");
     run.Press(Key('b'));
+
+    // covers from another console
+    run.Press(Key('D'), 6, 20);
+    run.Press(Key('a'), 30);
+    run.Shot("30-covers-waiting");
+    g_share.brief = "Asked";
+    g_share.detail = "The other console asked which covers are missing: 2 games. Waiting for it to come back with them...";
+    g_share.lines.push_back("Waiting for the other console nearby (direct wireless)...");
+    g_share.lines.push_back(g_share.detail);
+    run.Shot("31-covers-asked");
+    g_share.brief = "1 / 2";
+    g_share.detail = "Receiving covers";
+    g_share.stored = 1;
+    run.Shot("32-covers-arriving");
+    g_share.active = false;
+    g_share.brief = "2 received";
+    g_share.detail = "2 covers received.";
+    g_share.lines.push_back(g_share.detail);
+    g_share.stored = 2;
+    run.Shot("33-covers-received");
+    g_share.failed = true;
+    g_share.brief = "Failed";
+    g_share.detail = "Covers cannot be received: no sender on the network, and direct wireless is not available here (ldnInitialize 0xe401).";
+    g_share.lines = {"Waiting for the other console: choose to send the covers there.", g_share.detail};
+    g_share.stored = 0;
+    run.Shot("34-covers-failed");
+    run.Press(Key('b'));
+
+    // files from a computer
+    run.Press(Key('D'), 20);
+    run.Press(Key('a'), 30);
+    run.Shot("35-transfer-waiting");
+    g_transfer.connected = g_transfer.busy = true;
+    g_transfer.current = "Receiving /nx2-flow/games/Pretend Game Seven [0400F00000071000].nup";
+    g_transfer.total = 6200ull << 20;
+    g_transfer.queue_now = 1;
+    g_transfer.files = 2;
+    g_transfer.bytes = 181ull << 20;
+    g_transfer.lines.push_back("192.168.0.20 connected");
+    g_transfer.lines.push_back("PUT /nx2-flow/covers/ids.txt: 212 bytes, 0.1 MB/s");
+    g_transfer.lines.push_back("PUT /nx2-flow/games/Another Pretend Game.nup: 180.6 MiB in 6.9 s, 26.2 MB/s; longest pause 0.21 s; queue at most 3 of 8");
+    for (int k = 1; k <= 40; ++k) { // (some seconds of a steady pace, for the figure to settle)
+        g_transfer.done = static_cast<std::uint64_t>(k) * (27ull << 20) / 4 + (2600ull << 20);
+        run.Press({}, 15);
+    }
+    run.Shot("36-transfer-receiving");
+    run.Press(Key('b'), 30);
+    run.Shot("37-transfer-leave-question");
+    run.Press(Key('b'), 30);
+    g_transfer.busy = false;
+    g_transfer.files = 3;
+    g_transfer.bytes = 6381ull << 20;
+    g_transfer.lines.push_back("PUT /nx2-flow/games/Pretend Game Seven [0400F00000071000].nup: 6200.0 MiB in 238.4 s, 26.0 MB/s; longest pause 0.34 s; queue at most 4 of 8");
+    g_address.clear();
+    run.Press({}, 200);
+    run.Shot("38-transfer-no-network");
+    g_address = "192.168.0.50";
+    g_transfer.files = 0;
+    run.Press(Key('b'));
+    run.Wait();
+
     // the light theme
-    for (int k = 0; k < 4; ++k) {
-        run.Press(Key('D'), 20);
-    }
+    run.Press(Key('U'), 3, 20);
     run.Press(Key('R'));
-    run.Shot("12-settings-light");
+    run.Shot("39-settings-light");
     run.Press(Key('b'));
-    for (int k = 0; k < 8; ++k) {
-        run.Press(Key('L'), 30);
-    }
+    run.Press(Key('L'), 8, 30);
     run.Press(Key('R'), 90);
-    run.Shot("13-shelf-light");
+    run.Shot("40-shelf-light");
     run.Press(Key('y'));
-    run.Shot("14-options-light");
+    run.Shot("41-options-light");
+    run.Press(Key('D'), 2, 10);
+    run.Press(Key('a'));
+    run.Shot("42-slots-light");
     run.Press(Key('b'));
-    run.Press(Key('-'));
-    for (int k = 0; k < 4; ++k) {
-        run.Press(Key('D'), 20);
-    }
-    run.Press(Key('R'));
+    run.Press(Key('D'));
+    run.Press(Key('a'), 30);
+    run.Shot("43-advanced-warning-light");
     run.Press(Key('b'));
+    run.Press(Key('b'));
+    run.Press(Key('z'));
+    run.Shot("44-transfer-light");
+    run.Press(Key('b'));
+
     // a card with no games
     Flow::SetCardRoot(std::string{argv[1]} + "/empty");
     Run none;
     none.out = argv[2];
     none.app.Start();
     none.Press({}, 30);
-    none.Shot("15-no-games");
+    none.Shot("45-no-games");
     return 0;
 }

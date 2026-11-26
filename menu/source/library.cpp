@@ -8,6 +8,7 @@
 
 #include <dirent.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 #include "images.h"
 #include "nup.h"
@@ -297,6 +298,92 @@ void LoadIcon(Game& game, int& budget) {
 
 std::vector<std::string> ModSets(const Game& game) {
     return ListFolders(game.Folder() + "/modsets");
+}
+
+std::vector<std::string> SaveSlots(const Game& game) {
+    return ListFolders(game.Folder() + "/saves");
+}
+
+std::string SlotFolder(const Game& game, const std::string& slot) {
+    return slot.empty() || slot == "default" ? game.Folder() + "/save" : game.Folder() + "/saves/" + slot;
+}
+
+std::string CleanSlotName(const std::string& typed) {
+    std::string name;
+    for (const char ch : typed) {
+        const bool fine = (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == ' ' || ch == '-' ||
+                          ch == '_' || ch == '.';
+        if (!fine || name.size() >= 32 || (ch == ' ' && !name.empty() && name.back() == ' ')) {
+            continue; // (what is left out may leave two spaces together: one is kept)
+        }
+        name += ch;
+    }
+    // (a folder's name neither begins nor ends with a space or a dot on this kind of card)
+    while (!name.empty() && (name.back() == ' ' || name.back() == '.')) {
+        name.pop_back();
+    }
+    std::size_t first = 0;
+    while (first < name.size() && (name[first] == ' ' || name[first] == '.')) {
+        ++first;
+    }
+    name = name.substr(first);
+    return Lower(name) == "default" ? std::string{} : name;
+}
+
+bool CopyFolder(const std::string& from_card_path, const std::string& to_card_path, std::string& error) {
+    MakeFolders(to_card_path);
+    std::vector<std::string> files;
+    const std::vector<std::string> folders = ListFolders(from_card_path, &files);
+    std::vector<char> block(1 << 20);
+    for (const std::string& name : files) {
+        std::FILE* in = std::fopen(OnCard(from_card_path + "/" + name).c_str(), "rb");
+        if (!in) {
+            error = name + " couldn't be read";
+            return false;
+        }
+        std::FILE* out = std::fopen(OnCard(to_card_path + "/" + name).c_str(), "wb");
+        if (!out) {
+            std::fclose(in);
+            error = name + " couldn't be written";
+            return false;
+        }
+        bool ok = true;
+        for (;;) {
+            const std::size_t got = std::fread(block.data(), 1, block.size(), in);
+            if (got == 0) {
+                ok = std::ferror(in) == 0;
+                break;
+            }
+            if (std::fwrite(block.data(), 1, got, out) != got) {
+                ok = false;
+                break;
+            }
+        }
+        std::fclose(in);
+        if (std::fclose(out) != 0 || !ok) {
+            error = name + " couldn't be copied (is the card full?)";
+            return false;
+        }
+    }
+    for (const std::string& name : folders) {
+        if (!CopyFolder(from_card_path + "/" + name, to_card_path + "/" + name, error)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool RemoveFolder(const std::string& card_path) {
+    std::vector<std::string> files;
+    const std::vector<std::string> folders = ListFolders(card_path, &files);
+    bool ok = true;
+    for (const std::string& name : files) {
+        ok = std::remove(OnCard(card_path + "/" + name).c_str()) == 0 && ok;
+    }
+    for (const std::string& name : folders) {
+        ok = RemoveFolder(card_path + "/" + name) && ok;
+    }
+    return rmdir(OnCard(card_path).c_str()) == 0 && ok;
 }
 
 } // namespace Flow
