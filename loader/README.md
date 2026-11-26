@@ -10,7 +10,9 @@ card and how the two programs talk.
 
 ## What it does when it starts
 
-1. Reads the NUP file's table of contents and takes the packages that make the game: the game's own and its updates, the later
+1. Opens the NUP file: as one file, or, when the card keeps it in parts (a FAT32 card holds no file of 4 GiB or more:
+   `Game.nup.001`, `.002`, ..., docs/layout.md), as those, in the order of their numbers, once they are seen to make one whole file.
+   Then reads its table of contents and takes the packages that make the game: the game's own and its updates, the later
    over the earlier. Added content isn't taken yet.
 2. Unpacks the modules of the newest program (LZ4 or ZBIC) into memory and has the console's loader service map them, code and
    data together as on the console. That service maps seven images for a program besides its own: when a game has more
@@ -30,6 +32,9 @@ card and how the two programs talk.
   nx2-relink. A module that was merged is less surely right than one kept whole: `modules=whole` in `game.cfg` merges none.
 - **The host game matters**, as for a port: the memory for graphics, the system resource and the services a program may use are
   those of the game the homebrew menu was started over. A service a game can run without is stood in for; the log says so.
+- **At most 64 parts** is a NUP file read in (255 GiB, in parts of 4095 MB). A set that isn't whole (a part missing, parts of more
+  than one size, fewer bytes than the file's own first bytes say it is) isn't read: the log says which and why, in its `[game]`
+  lines.
 - Tried with kaiHEN 20261117.1 only.
 
 ## Building
@@ -38,6 +43,13 @@ Needs devkitPro (devkitA64) and ounce-devkit (libounce), and Python 3.10 or newe
 
 ```bash
 python tools/build_loader.py          # out/nx2-game.nro
+```
+
+`runtime/parts.h`, which says where each byte of a file in parts is, is tried on a computer, with the computer's own C compiler
+(`HOSTCC`, else one found on the path, else devkitPro's msys2 has one for the computer itself):
+
+```bash
+python tools/test_parts.py
 ```
 
 ## Trying it without the menu

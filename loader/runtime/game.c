@@ -21,6 +21,7 @@
 #include <zstd.h>  // (third_party/zstd: Zstandard's own decoder)
 
 #include "nx2.h"
+#include "parts.h"
 void nx2_log(const char *fmt, ...);
 void nx2_log_flush(void);
 s64 nx2_zbic_to_zstd(const u8 *data, u64 size, u8 *out, u64 room);  // zbic.c
@@ -62,26 +63,115 @@ static void w32(u8 *p, u32 v) { p[0] = (u8)v, p[1] = (u8)(v >> 8), p[2] = (u8)(v
 static void w64(u8 *p, u64 v) { w32(p, (u32)v), w32(p + 4, (u32)(v >> 32)); }
 
 // ---------------------------------------------------------------- the NUP file
+// The NUP file as the card has it: the file itself, or in parts (parts.h). Given the file's path ("/nx2-flow/games/Game.nup"),
+// the file is opened when it is there; when it is not, its folder is listed for the file's parts ("Game.nup.001", ".002", ...),
+// which are opened in the order of their numbers once they are seen to make one whole file. Every read of the file goes
+// through nup_read, the one place where a byte's place in the file is told from its place in a part.
 static struct {
-    FsFile file;
+    FsFile file[NX2_PARTS];  // a part's handle, by its number's place among them
+    Nx2Parts where;          // where each part begins in the file, and how many bytes it holds (its count: how many are open)
     u8 *toc;
     u64 toc_size, ndirs, nfiles, children_at, pool_size;
     u32 npackages;
     const u8 *packages, *dirs, *files, *pool;
 } nup;
 
-// so many of the file's bytes, from a place in it: 0, or the file system's word for what went wrong
+// so many of the file's bytes, from a place in it: 0, or the file system's word for what went wrong. A read that lies in two
+// parts (a file of the game's whose bytes are on both sides of where a part ends) is two reads.
 static u32 nup_read(u64 at, void *to, u64 size) {
     u8 *out = to;
+    if (at > nup.where.size || size > nup.where.size - at) return 0x2EE202;
     while (size) {
-        const u64 take = size < (4u << 20) ? size : 4u << 20;
+        const u32 k = nx2_parts_of(&nup.where, at);
+        u64 take = size < (4u << 20) ? size : 4u << 20;
+        const u64 room = nx2_parts_room(&nup.where, k, at, take);
         u64 got = 0;
-        const u32 rc = fsFileRead(&nup.file, (s64)at, out, take, FsReadOption_None, &got);
+        if (!room) return 0x2EE202;
+        take = room;
+        const u32 rc = fsFileRead(&nup.file[k], (s64)(at - nup.where.part[k].at), out, take, FsReadOption_None, &got);
         if (rc) return rc;
         if (got != take) return 0x2EE202;
         at += take, out += take, size -= take;
     }
     return 0;
+}
+
+static void nup_shut(void) {
+    for (u32 k = 0; k < nup.where.count; k++) fsFileClose(&nup.file[k]);
+    nx2_parts_reset(&nup.where);
+}
+
+// The NUP file at "inner" (a path of the card), when it is one file. 0: it is, and it is open.
+static int nup_open_file(FsFileSystem *sd, const char *inner) {
+    s64 size = 0;
+    if (!sd || R_FAILED(fsFsOpenFile(sd, inner, FsOpenMode_Read, &nup.file[0])) || R_FAILED(fsFileGetSize(&nup.file[0], &size)) || size < 0) return -1;
+    nup.where.part[0].at = 0, nup.where.part[0].size = size, nup.where.count = 1, nup.where.size = (u64)size;
+    return 0;
+}
+
+static char lower(char c) { return c >= 'A' && c <= 'Z' ? (char)(c - 'A' + 'a') : c; }
+// Is "entry" the name of a part of the file "name" ("Game.nup.003" of "Game.nup")? If so, where its number's digits begin in
+// it. (Letters are told apart as a card tells them: not at all.)
+static const char *part_digits(const char *name, const char *entry) {
+    u32 n = 0;
+    for (; name[n]; n++)
+        if (lower(name[n]) != lower(entry[n])) return NULL;
+    if (entry[n] != '.' || !entry[n + 1]) return NULL;
+    for (u32 k = n + 1; entry[k]; k++)
+        if (entry[k] < '0' || entry[k] > '9') return NULL;
+    return entry + n + 1;
+}
+
+// The parts of the NUP file that are in its folder, in the order of their numbers. 0: there are none. 1: there are some.
+// -1: the folder can't be listed. -2: there are more than NX2_PARTS of them.
+#define DIGITS 24
+typedef struct {
+    char digits[DIGITS];  // the number as the card spells it ("003")
+    u64 number;
+} Found;
+static Found found[NX2_PARTS];
+static u32 nfound;
+static int nup_parts_list(FsFileSystem *sd, const char *inner) {
+    static char folder[FS_MAX_PATH];
+    static FsDirectoryEntry entries[16];
+    const char *slash = strrchr(inner, '/'), *name = slash ? slash + 1 : inner;
+    u32 n = 0;
+    if (slash)
+        for (; inner + n != slash && n < sizeof folder - 2; n++) folder[n] = inner[n];
+    if (n == sizeof folder - 2) return -1;
+    if (!n) folder[n++] = '/';
+    folder[n] = 0;
+    FsDir dir;
+    if (!sd || R_FAILED(fsFsOpenDirectory(sd, folder, FsDirOpenMode_ReadFiles, &dir))) return -1;
+    nfound = 0;
+    int over = 0;  // (more of them than are read)
+    for (;;) {
+        s64 got = 0;
+        if (over || R_FAILED(fsDirRead(&dir, &got, 16, entries)) || got <= 0) break;
+        for (s64 e = 0; e < got && !over; e++) {
+            if (entries[e].type != FsDirEntryType_File) continue;
+            const char *digits = part_digits(name, entries[e].name);
+            if (!digits || strlen(digits) > 18) continue;  // (more digits than a number holds: no part of anything)
+            if (nfound == NX2_PARTS) {
+                over = 1;
+                break;
+            }
+            Found *f = &found[nfound];
+            f->number = 0;
+            for (u32 k = 0; digits[k]; k++) f->number = f->number * 10 + (u64)(digits[k] - '0');
+            strcpy(f->digits, digits);
+            nfound++;
+        }
+    }
+    fsDirClose(&dir);
+    if (over) return -2;
+    for (u32 k = 1; k < nfound; k++) {  // (by their numbers, the lesser first)
+        const Found f = found[k];
+        u32 at = k;
+        for (; at && found[at - 1].number > f.number; at--) found[at] = found[at - 1];
+        found[at] = f;
+    }
+    return nfound ? 1 : 0;
 }
 
 typedef struct {
@@ -121,16 +211,79 @@ static s64 nup_find(u32 dir, const char *name) {
 
 static int nup_open(const char *path) {
     FsFileSystem *sd = fsdevGetDeviceFileSystem("sdmc");
-    static char inner[FS_MAX_PATH];
+    static char inner[FS_MAX_PATH], part[FS_MAX_PATH];
     const char *colon = strchr(path, ':');
     strncpy(inner, colon ? colon + 1 : path, sizeof inner - 1);
-    if (!sd || fsFsOpenFile(sd, inner, FsOpenMode_Read, &nup.file)) {
-        nx2_log("[game] %s can't be opened\n", path);
-        return -1;
+    int in_parts = 0;
+    if (nup_open_file(sd, inner)) {
+        // (not there as one file. Given the name of one of its parts, it is the file's own name that is looked for)
+        char *dot = strrchr(inner, '.');
+        int digits = dot && dot[1] != 0;
+        for (const char *c = dot; digits && c[1]; c++) digits = c[1] >= '0' && c[1] <= '9';
+        if (digits) {
+            *dot = 0;
+            if (!nup_open_file(sd, inner)) return 0;
+        }
+        const char *name = strrchr(inner, '/');
+        name = name ? name + 1 : inner;
+        const int listed = nup_parts_list(sd, inner);
+        if (listed == -2) {
+            nx2_log("[game] %s IS INCOMPLETE: it is in more than %u parts on the card, and that is more than are read\n", path, (u64)NX2_PARTS);
+            return -1;
+        }
+        if (listed < 0) {
+            nx2_log("[game] %s can't be opened: it isn't one file, and its folder can't be looked in for its parts\n", path);
+            return -1;
+        }
+        if (!listed) {
+            nx2_log("[game] %s can't be opened\n", path);
+            return -1;
+        }
+        in_parts = 1;
+        for (u32 k = 0; k < nfound; k++) {
+            // (the file's path, a dot, and the number as the card spells it: too long for a path of the card, no file has it)
+            const u32 n = (u32)strlen(inner);
+            const int too_long = n + 1 + strlen(found[k].digits) >= sizeof part;
+            s64 size = 0;
+            if (!too_long) memcpy(part, inner, n), part[n] = '.', strcpy(part + n + 1, found[k].digits);
+            if (too_long || R_FAILED(fsFsOpenFile(sd, part, FsOpenMode_Read, &nup.file[k])) || R_FAILED(fsFileGetSize(&nup.file[k], &size)) || nx2_parts_add(&nup.where, size)) {
+                nx2_log("[game] %s IS INCOMPLETE: its part %s.%s isn't on the card as a file that can be read\n", path, name, found[k].digits);
+                nup_shut();
+                return -1;
+            }
+        }
+        static u64 numbers[NX2_PARTS];
+        static s64 sizes[NX2_PARTS];
+        for (u32 k = 0; k < nfound; k++) numbers[k] = found[k].number, sizes[k] = nup.where.part[k].size;
+        const int whole = nx2_parts_whole(numbers, sizes, nfound, 0);
+        if (whole) {
+            static char said[9 * (DIGITS + 2) + 48];
+            u32 n = (u32)snprintf(said, sizeof said, ".%s", found[0].digits);
+            for (u32 k = 1; k < nfound && k < 9; k++) n += (u32)snprintf(said + n, sizeof said - n, ", .%s", found[k].digits);
+            if (nfound > 9) snprintf(said + n, sizeof said - n, " ... (%u in all)", (unsigned)nfound);
+            if (whole == 1)
+                nx2_log("[game] %s IS INCOMPLETE: its parts are %s: a part is missing, or two have one number (they are numbered from 001, or from 000)\n", path, said);
+            else {
+                u32 other = 1;  // (the first after the one all must be as long as)
+                while (other + 1 < nfound && sizes[other] == sizes[0]) other++;
+                nx2_log("[game] %s: its parts aren't of one size: .%s holds %u MB and .%s holds %u MB (all are one size, the last alone may be shorter)\n", path,
+                        found[0].digits, (u64)(sizes[0] > 0 ? sizes[0] : 0) >> 20, found[other].digits, (u64)(sizes[other] > 0 ? sizes[other] : 0) >> 20);
+            }
+            nup_shut();
+            return -1;
+        }
+        nx2_log("[game] %s: in %u parts of %u MB (the last, %u MB)\n", path, (u64)nfound, (u64)sizes[0] >> 20, (u64)sizes[nfound - 1] >> 20);
     }
     u8 head[0x80];
     if (nup_read(0, head, sizeof head) || memcmp(head, "NUP\x01", 4)) {
         nx2_log("[game] %s isn't a NUP container\n", path);
+        return -1;
+    }
+    if (in_parts && r64(head + 0x40) && r64(head + 0x40) != nup.where.size) {
+        // (in parts, then: a copy cut short, or a part of another copy left over. By the file's own first bytes it is other than
+        // what is there)
+        nx2_log("[game] %s IS INCOMPLETE: it is %u MB long by its own first bytes, and %u MB of it are on the card. Copy it again\n", path, r64(head + 0x40) >> 20,
+                nup.where.size >> 20);
         return -1;
     }
     const u64 toc_at = r64(head + 8);
@@ -1095,9 +1248,9 @@ static void read_test(void) {
     const int two = other[0] && R_SUCCEEDED(fsFsOpenFile(fsdevGetDeviceFileSystem("sdmc"), other, FsOpenMode_Read, &second));
     static const u64 sizes[3] = {64u << 10, 256u << 10, 900u << 10};
     for (int f = 0; f < (two ? 2 : 1); f++) {
-        FsFile *file = f ? &second : &nup.file;
         s64 size = 0;
-        fsFileGetSize(file, &size);
+        if (f) fsFileGetSize(&second, &size);
+        else size = (s64)nup.where.size;  // (the NUP file: through its parts, as the game reads it)
         for (int far = 1; far >= 0; far--)
             for (int s = 0; s < 3; s++) {
                 u64 seed = 12345, at = (u64)size / 3, sum = 0, most = 0;
@@ -1108,7 +1261,7 @@ static void read_test(void) {
                     else at = (at + (4u << 20) + ((seed >> 40) & 0xFFFFF)) % ((u64)size - (2u << 20));
                     u64 got = 0;
                     const u64 began = armGetSystemTick();
-                    if (R_FAILED(fsFileRead(file, (s64)at, piece, sizes[s], FsReadOption_None, &got)) || got != sizes[s]) bad++;
+                    if (f ? R_FAILED(fsFileRead(&second, (s64)at, piece, sizes[s], FsReadOption_None, &got)) || got != sizes[s] : nup_read(at, piece, sizes[s]) != 0) bad++;
                     const u64 us = armTicksToNs(armGetSystemTick() - began) / 1000;
                     sum += us;
                     if (us > most) most = us;
