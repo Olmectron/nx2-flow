@@ -434,7 +434,7 @@ static u32 mods_read(Image *im, u64 offset, u8 *to, u64 size, u64 *got) {
 }
 
 static u32 buf_mode;  // (how the last receive buffer looked at was to be mapped: 0 as usual, 1 non-secure allowed, 3 non-device)
-static const u8 *data_of(const u8 *m, u64 *buf, u64 *buf_size) {
+static const u8 *data_bounds(const u8 *m, u64 *buf, u64 *buf_size, const u8 **end) {
     const u32 w0 = rd32(m), w1 = rd32(m + 4);
     u32 o = 8;
     if (w1 >> 31) {
@@ -450,7 +450,31 @@ static const u8 *data_of(const u8 *m, u64 *buf, u64 *buf_size) {
         buf_mode = hi & 3;
     }
     o += ((w0 >> 24 & 15) + (w0 >> 28 & 15)) * 12;
+    if (end) {
+        const u32 limit = o + (w1 & 0x3FFu) * 4;
+        *end = m + (limit < 0x100u ? limit : 0x100u);
+    }
     return m + ((o + 15) & ~15u);
+}
+static const u8 *data_of(const u8 *m, u64 *buf, u64 *buf_size) { return data_bounds(m, buf, buf_size, NULL); }
+
+// Program index of the loaded title (low byte of its 16-hex-digit title id in loader builds, or 0 otherwise).
+static u32 rom_program_index(void) {
+#ifdef NX2_LOADER
+    u32 idx = 0;
+    for (int k = 0; k < 16; k++) {
+        const char c = nx2_game_id[k];
+        u32 v;
+        if (c >= '0' && c <= '9') v = (u32)(c - '0');
+        else if (c >= 'a' && c <= 'f') v = (u32)(c - 'a' + 10);
+        else if (c >= 'A' && c <= 'F') v = (u32)(c - 'A' + 10);
+        else return 0;
+        if (k >= 14) idx = (idx << 4) | v;
+    }
+    return nx2_game_id[16] == 0 ? idx : 0;
+#else
+    return 0;
+#endif
 }
 
 // an answer in a domain: the domain's header, the result, the data, the object handed over (0: none)
@@ -472,7 +496,8 @@ int nx2_rom_ipc(u8 *m) {
     const u32 type = rd32(m) & 0xFFFF;
     if (!images[0].ok || (type != 4 && type != 6)) return 0;  // (a request, with or without a context: not a control message)
     u64 buf, buf_size;
-    const u8 *d = data_of(m, &buf, &buf_size);
+    const u8 *end = NULL;
+    const u8 *d = data_bounds(m, &buf, &buf_size, &end);
     if (d + 32 > m + 0x100) return 0;
     const u32 kind = d[0], object = rd32(d + 4);
     const int has_cmd = rd32(d + 16) == 0x49434653;  // "SFCI"
@@ -504,6 +529,27 @@ int nx2_rom_ipc(u8 *m) {
 #else
                     "on the card");
 #endif
+        }
+        if (cmd == 205) {  // OpenDataStorageWithProgramIndex(u8 program_index) -> IStorage
+            const u32 domain_size = rd32(d) >> 16;
+            if (d + 33 > end || domain_size < 17) return 0;
+            const u8 program_index = d[32];
+            const u32 cur = rom_program_index();
+            if (images[0].size > 0 && (program_index == cur || program_index == 0)) {
+                nx2_log("[rom] the SDK asks for program %u's data storage (command 205, title program %u): given %s\n",
+                        (u64)program_index, (u64)cur,
+#ifdef NX2_LOADER
+                        "from the NUP file");
+#else
+                        "the file on the card");
+#endif
+                answer(m, 0, NULL, 0, ROM_OBJECT);
+                return 1;
+            }
+            nx2_log("[rom] the SDK asks for program %u's data storage (command 205, title program %u): not found (result 7d402)\n",
+                    (u64)program_index, (u64)cur);
+            answer(m, 0x7D402, NULL, 0, 0);
+            return 1;
         }
         return 0;
     }
