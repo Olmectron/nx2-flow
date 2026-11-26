@@ -209,18 +209,22 @@ static u32 applet_sdk, applet_host, applet_proxy;
 #define APPLET_ROOT 1u  // the session's own object, as the SDK is told
 static u32 applet_receive;  // the message being sent asks for the system's next message to the program
 static u32 applet_state, applet_event;  // ICommonStateGetter's object, and the handle of its event (a message is waiting)
-static u32 applet_asked;                // the object the request being sent asks command 0 of
+static u32 applet_funcs;                // IApplicationFunctions's object (returned by IApplicationProxy command 20)
+static u32 applet_asked, applet_asked_cmd;  // the object and command the request being sent asks of
 static int applet_message = 1;          // the first message is still to be given (below)
 
-// the answer to a request sent on: which object is the state getter, and which handle its event
+// the answer to a request sent on: which object is the state getter, application functions, and which handle its event
 static void applet_answered(const u8 *m, u32 handle) {
-    if (applet_asked == applet_proxy && !applet_state && m[0x10] == 1) {  // GetCommonStateGetter
+    if (applet_asked == applet_proxy && applet_asked_cmd == 0 && !applet_state && m[0x10] == 1) {  // GetCommonStateGetter
         applet_state = (u32)m[0x30] | (u32)m[0x31] << 8 | (u32)m[0x32] << 16 | (u32)m[0x33] << 24;
         nx2_log("[applet] the state getter is object %u\n", (u64)applet_state);
-    } else if (applet_state && applet_asked == applet_state && handle && !applet_event) {  // GetEventHandle
+    } else if (applet_asked == applet_proxy && applet_asked_cmd == 20 && !applet_funcs && m[0x10] == 1) {  // GetApplicationFunctions
+        applet_funcs = (u32)m[0x30] | (u32)m[0x31] << 8 | (u32)m[0x32] << 16 | (u32)m[0x33] << 24;
+        nx2_log("[applet] the application functions are object %u\n", (u64)applet_funcs);
+    } else if (applet_state && applet_asked == applet_state && applet_asked_cmd == 0 && handle && !applet_event) {  // GetEventHandle
         applet_event = handle;
     }
-    applet_asked = 0;
+    applet_asked = 0, applet_asked_cmd = 0;
 }
 
 static void applet_named(u32 sdk_handle) {
@@ -228,6 +232,7 @@ static void applet_named(u32 sdk_handle) {
     Service *p = appletGetServiceSession_Proxy();
     if (!serviceIsActive(p) || !p->object_id) return;
     applet_host = p->session, applet_proxy = p->object_id, applet_sdk = sdk_handle;
+    applet_funcs = 0, applet_asked = 0, applet_asked_cmd = 0;
     nx2_log("[applet] the SDK's applet session (%x) goes to the host library's (%x, proxy object %u)\n", (u64)sdk_handle, (u64)applet_host,
             (u64)applet_proxy);
 }
@@ -274,8 +279,21 @@ static int applet_ipc(u8 *m, u32 *h, u32 type, u32 cmd) {
         nx2_ipc_answer(m, 0, NULL, 0, 0);
         return 1;
     }
-    applet_asked = kind == 1 && cmd == 0 ? object : 0;
+    if (kind == 2 && applet_funcs && object == applet_funcs) applet_funcs = 0;
+    applet_asked = (kind == 1 && (cmd == 0 || cmd == 20)) ? object : 0;
+    applet_asked_cmd = cmd;
     applet_receive = kind == 1 && object == applet_state && cmd == 1;  // (ReceiveMessage: the system's messages to the program)
+#ifdef NX2_LOADER
+    // GetDisplayVersion (IApplicationFunctions command 23): return the NUP game's display version rather than the donor title's,
+    // so games validating saved data or replays against nn::oe::GetDisplayVersion do not see the donor's version string.
+    if (kind == 1 && applet_funcs && object == applet_funcs && cmd == 23 && nx2_game_display_version[0]) {
+        u8 ver[16] = {0};
+        for (u32 k = 0; k < 15 && nx2_game_display_version[k]; k++) ver[k] = (u8)nx2_game_display_version[k];
+        nx2_log("[applet] the game asks its display version (command 23): told \"%s\" (from the NUP file)\n", nx2_game_display_version);
+        nx2_ipc_answer(m, 0, ver, sizeof ver, 0);
+        return 1;
+    }
+#endif
     // The SDK's start waits for the system's message that the program has the screen (15: the focus changed), and the host library
     // took that message at its own start: the SDK waited for good, a black screen (log, 2026-11-22). It is given once more, here.
     if (kind == 1 && object == applet_state && cmd == 1 && applet_message) {  // ICommonStateGetter's ReceiveMessage
