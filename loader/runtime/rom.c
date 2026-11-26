@@ -26,7 +26,7 @@
 // <folder>/aoc<index>.romfs, which tools/nsp.py --aoc writes. The SDK asks for those by "data id", the last digits of which
 // are the add-on's index (fsp-srv 202), after asking the add-on content service which there are (nx2_aoc_ipc).
 #define ROM_PARTS 16
-#define ROM_IMAGES 41
+#define ROM_IMAGES 65
 typedef struct {
     FsFile part[ROM_PARTS];
     s64 size, part_size;  // the whole image's size, and one part's (the whole, for an image in one file)
@@ -89,6 +89,12 @@ static void mods_start(void);
 void nx2_rom_open(void) {
 #ifdef NX2_LOADER
     images[0].ok = 1, images[0].size = (s64)nx2_game_rom_size(), images[0].parts = 0;
+    const u32 aocs = nx2_game_aoc_count();
+    for (u32 k = 0; k < aocs && image_count < ROM_IMAGES; k++) {
+        Image *im = &images[image_count++];
+        im->ok = 1, im->size = (s64)nx2_game_aoc_size(k), im->parts = 0, im->index = nx2_game_aoc_index(k);
+        nx2_log("[rom] add-on content %u from the NUP file: %u KB\n", (u64)im->index, (u64)im->size >> 10);
+    }
     mods_start();
     return;
 #endif
@@ -98,7 +104,7 @@ void nx2_rom_open(void) {
     else nx2_log("[rom] sdmc:%s isn't there: the game gets the files of the program this was started over\n", path);
     image_whole(&images[0]);
     mods_open(&images[0]);
-    for (u32 index = 1; index < ROM_IMAGES && image_count < ROM_IMAGES; index++) {
+    for (u32 index = 1; index < 41 && image_count < ROM_IMAGES; index++) {
         static char aoc[FS_MAX_PATH];
         const char *head = NX2_HOME "/aoc";
         u32 n = 0;
@@ -479,14 +485,24 @@ int nx2_rom_ipc(u8 *m) {
         }
         if (cmd == 202 && image_count > 1 && d + 48 <= m + 0x100) {  // OpenDataStorageByDataId(storage, data id)
             const u64 id = rd64(d + 40);
-            if (id >> 12 == 0x0100000000000ull) return 0;  // (the system's own data: its fonts and the like)
+            if (id >> 12 == 0x0100000000000ull || id >> 12 == 0x0400000000000ull) return 0;  // (the system's own data: its fonts and the like)
             for (u32 k = 1; k < image_count; k++)
                 if (images[k].index == (id & 0xFFF)) {
-                    nx2_log("[rom] the SDK asks for data %x: add-on content %u, given the file on the card\n", id, (u64)images[k].index);
+                    nx2_log("[rom] the SDK asks for data %x: add-on content %u, given %s\n", id, (u64)images[k].index,
+#ifdef NX2_LOADER
+                            "from the NUP file");
+#else
+                            "the file on the card");
+#endif
                     answer(m, 0, NULL, 0, ROM_OBJECT + k);
                     return 1;
                 }
-            nx2_log("[rom] the SDK asks for data %x: no add-on content of that index is on the card\n", id);
+            nx2_log("[rom] the SDK asks for data %x: no add-on content of that index is %s\n", id,
+#ifdef NX2_LOADER
+                    "in the NUP file");
+#else
+                    "on the card");
+#endif
         }
         return 0;
     }
@@ -499,11 +515,12 @@ int nx2_rom_ipc(u8 *m) {
         const u64 offset = rd64(d + 32), size = rd64(d + 40);
         u32 rc = 0;
         u64 got = 0;
-        const int laid = mods.on && im == &images[0];  // (<folder>/mods: the game's own image, with files of the user's over it)
+        const u32 which = (u32)(im - images);
+        const int laid = mods.on && !which;  // (<folder>/mods: the game's own image, with files of the user's over it)
         const u64 whole = laid ? mods.size : (u64)im->size;
         if (size > buf_size || offset > whole || size > whole - offset) rc = 0x2EE202;  // out of range (fs)
 #ifdef NX2_LOADER
-        else if (size && laid) rc = nx2_game_rom_read(offset, (u8 *)buf, size, &got);
+        else if (size) rc = which ? nx2_game_aoc_read(which - 1, offset, (u8 *)buf, size, &got) : nx2_game_rom_read(offset, (u8 *)buf, size, &got);
 #endif
         else if (size) rc = laid ? mods_read(im, offset, (u8 *)buf, size, &got) : rom_read(im, offset, (u8 *)buf, size, &got);
         if (rc || got != size || rom_logged < 12 || nx2_ipclog) {  // (<folder>/ipclog: every read)
@@ -560,7 +577,13 @@ int nx2_aoc_ipc(u8 *m) {
         // reaches it: they have no data to give back. nx2-relink's issue 25, whose finding and change this is.)
         return 0;
     }
-    nx2_log("[aoc] command %u: answered from the card (%u add-on content there)\n", (u64)cmd, (u64)count);
+    nx2_log("[aoc] command %u: answered from %s (%u add-on content there)\n", (u64)cmd,
+#ifdef NX2_LOADER
+            "the NUP file",
+#else
+            "the card",
+#endif
+            (u64)count);
     if (domain) {
         answer(m, 0, raw, raw_size, 0);
         return 1;
