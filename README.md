@@ -12,7 +12,7 @@ that runs the one you pick straight from its NUP file. Nothing is built for each
 
 ![The shelf, on the console: seven cases with no cover yet](docs/shelf.jpg)
 
-*The shelf as the console shows it (one of its eight styles), with stand-in games that have neither a name nor a cover.*
+*The shelf as the console shows it (the style it starts with, of nine), with stand-in games that have neither a name nor a cover.*
 
 **Work in progress.** It has been tried with few games and one setup (kaiHEN 20261117.1).
 

@@ -132,6 +132,8 @@ def main():
             picture(k, (808, 624), title, wrap=True).save(os.path.join(covers, 'full', f'{code}.jpg'), quality=88)
             ids.append(f'{title_id:016x}={code}')
     open(os.path.join(covers, 'ids.txt'), 'w', newline='\n').write('\n'.join(ids) + '\n')
+    # (the previews walk through the styles from the first of the list, which is not the one the menu starts with)
+    open(os.path.join(card, 'nx2-flow', 'menu.cfg'), 'w', newline='\n').write('style=Coverflow\n')
     open(os.path.join(games, 'not a container.nup'), 'wb').write(b'this is not a NUP container' * 8)
     # one game's folder, as after a few runs: two sets of mods, a log, a report
     folder = os.path.join(card, 'nx2-flow', f'{0x0400F00000001000:016x}')

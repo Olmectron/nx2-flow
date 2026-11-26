@@ -33,7 +33,7 @@ Two homebrew programs for a Switch 2, both in one folder of the card so that the
 | key | meaning |
 |---|---|
 | `games` | the folder the NUP files are in (`/nx2-flow/games` when absent) |
-| `style` | how the games stand on the shelf, by name (`Coverflow` when absent) |
+| `style` | how the games stand on the shelf, by name (`Showroom` when absent) |
 | `covers` | `hidden`: every game shows its own icon; anything else: covers are shown |
 | `cases` | `off`: covers are flat pictures; anything else: they stand as cases |
 | `theme` | `light`, or dark |

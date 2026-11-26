@@ -136,6 +136,7 @@ void App::LoadSettings() {
         }
     }
     const std::string name = Value(cfg, "style");
+    style = static_cast<int>(ShelfStyle::Showroom); // (how the games stand when menu.cfg doesn't say)
     for (int k = 0; k < static_cast<int>(ShelfStyle::Count); ++k) {
         if (name == ShelfStyleName(static_cast<ShelfStyle>(k))) {
             style = k;
