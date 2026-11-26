@@ -7,6 +7,43 @@
 #include <string.h>
 
 #include "nx2.h"
+#include "preselected.h"
+
+// Capture a valid host AccountUid before handing off to the game so svc.c can synthesize
+// LaunchParameterKind_PreselectedUser if am returns 0x480 (already consumed or donor title
+// started without StartupUserAccount). Always closes any temporary host acc:u0 session.
+static void nx2_preselected_capture(void) {
+    AccountUid uid = {0};
+    const char *how = NULL;
+    const AccountUid *env_uid = envGetUserIdStorage();
+    if (env_uid && accountUidIsValid(env_uid)) {
+        uid = *env_uid;
+        how = "envGetUserIdStorage";
+    } else {
+        const Result rc = accountInitialize(AccountServiceType_Application);
+        if (R_SUCCEEDED(rc)) {
+            if (R_SUCCEEDED(accountGetPreselectedUser(&uid)) && accountUidIsValid(&uid)) {
+                how = "accountGetPreselectedUser";
+            } else {
+                AccountUid users[ACC_USER_LIST_SIZE];
+                s32 got = 0;
+                if (R_SUCCEEDED(accountListAllUsers(users, ACC_USER_LIST_SIZE, &got)) && got > 0 && accountUidIsValid(&users[0])) {
+                    uid = users[0];
+                    how = "accountListAllUsers";
+                }
+            }
+            accountExit();
+        } else {
+            nx2_log("[applet] host accountInitialize failed (%x): no fallback preselected user\n", (u64)rc);
+        }
+    }
+    if (accountUidIsValid(&uid)) {
+        nx2_preselected_set(uid.uid[0], uid.uid[1]);
+        nx2_log("[applet] preselected user captured via %s (%x %x)\n", how, uid.uid[0], uid.uid[1]);
+    } else {
+        nx2_log("[applet] no preselected user available on host\n");
+    }
+}
 
 // The host library's heap is the memory the homebrew loader hands over, nearly all a game may have. The game's own heap is taken off
 // its top before the C library has any of it: asked of malloc afterwards, a block of 2 GB or more was refused on a Switch with
@@ -499,6 +536,7 @@ int main(int argc, char **argv) {
         heap_back();
         return 1;
     }
+    nx2_preselected_capture();
     // The system gives a program one applet session (appletOE), and the host library opened it at start; the SDK asks for its own
     // (nn::oe::Initialize) and was refused: result 3e880, then Break (log, 2026-11-22). So the host's is closed first, as one
     // homebrew program does before the next is loaded into the same process.
