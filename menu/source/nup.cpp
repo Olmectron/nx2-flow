@@ -22,6 +22,7 @@
 #pragma GCC diagnostic ignored "-Wunused-function"
 extern "C" {
 #include "nupparts.h"
+#include "nup_title.h"
 }
 #pragma GCC diagnostic pop
 
@@ -283,14 +284,26 @@ bool Read(const std::vector<Part>& parts, Info& out, std::string& error) {
 
     const Package* game = nullptr;
     const Package* update = nullptr;
+    u64 base_title = 0;
+    u64 update_title = 0;
+    u32 update_title_ver = 0;
     out.packages = static_cast<int>(count);
     for (const Package& pk : packages) {
-        if (pk.kind == 0 && !game) {
-            game = &pk;
+        if (pk.kind == 0) {
+            if (!game) {
+                game = &pk;
+            }
+            if (!base_title && pk.title != 0) {
+                base_title = pk.title;
+            }
         } else if (pk.kind == 1) {
             ++out.updates;
             if (!update || pk.version > update->version) {
                 update = &pk;
+            }
+            if (pk.title != 0 && (!update_title || pk.version >= update_title_ver)) {
+                update_title = pk.title;
+                update_title_ver = pk.version;
             }
         } else if (pk.kind == 2) {
             ++out.addons;
@@ -302,8 +315,19 @@ bool Read(const std::vector<Part>& parts, Info& out, std::string& error) {
     }
     const Package* newest = update ? update : game;
     const Package* base = game ? game : update;
+    u64 npdm_pid = 0;
+    if (base_title == 0 && update_title == 0) {
+        for (const Package* pk : {newest, base}) {
+            if (const auto* npdm = fact(*pk, kNpdm)) {
+                npdm_pid = nx2_npdm_program_id(npdm->data(), npdm->size());
+                if (npdm_pid != 0) {
+                    break;
+                }
+            }
+        }
+    }
     // (an update's title id is the game's with 0x800 added: the game's is what a game is known by)
-    out.title_id = game ? game->title : update->title & ~0xFFFull;
+    out.title_id = nx2_resolve_title_id(base_title, update_title, npdm_pid);
     out.version = newest->version;
     for (const Package* pk : {newest, base}) {
         if (out.display_version.empty()) {
