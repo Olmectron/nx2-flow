@@ -24,6 +24,8 @@ Two homebrew programs for a Switch 2, both in one folder of the card so that the
     log.txt  log.prev.txt  crash.txt the loader's log of the last run, of the one before, and a run that ended badly
     mods/                            files laid over the game's own (the default set)
     modsets/<name>/                  other sets of such files, one folder each
+    exefs_patches/                   IPS / IPS32 patches for the game's modules, named by NSO Build ID (<build_id>.ips[32],
+                                     directly here or one subfolder deep as <mod>/<build_id>.ips[32])
     game.cfg                         the game's settings, lines of key=value
     debug                            an empty file: the detailed log is on
     nvnnative                        an empty file: the game's calls to the graphics driver are not counted by the loader

@@ -21,6 +21,7 @@
 #include <zstd.h>  // (third_party/zstd: Zstandard's own decoder)
 
 #include "nx2.h"
+#include "ips.h"       // (ExeFS .ips / .ips32 binary patches applied to unpacked NSO modules by Build ID)
 #include "nupparts.h"  // (a NUP file kept in parts, for a card that takes no file of 4 GB)
 void nx2_log(const char *fmt, ...);
 void nx2_log_flush(void);
@@ -345,8 +346,23 @@ static void big_left(u64 *all, u64 *largest) {
     __atomic_store_n(&pieces_lock, 0, __ATOMIC_RELEASE);
 }
 
+typedef struct {
+    const char *module_name;
+    const char *build_id;
+} IpsLogCtx;
+
+static void ips_log_cb(const char *rel_path, Nx2IpsStatus status, const Nx2IpsResult *result, void *user) {
+    const IpsLogCtx *ctx = (const IpsLogCtx *)user;
+    if (status == NX2_IPS_OK) {
+        nx2_log("[patch] %s (%s): %s applied (%s, %u hunk(s), %u byte(s))\n", ctx->module_name, ctx->build_id, rel_path,
+                result->is_ips32 ? "IPS32" : "IPS", (u64)result->hunks, result->bytes);
+    } else {
+        nx2_log("[patch] %s (%s): %s skipped (%s)\n", ctx->module_name, ctx->build_id, rel_path, nx2_ips_status_str(status));
+    }
+}
+
 // One module, from its file in the NUP: its image in memory (the bss not there), and the row of each table a port has for it.
-static int module_load(unsigned k, const char *name, u64 file) {
+static int module_load(unsigned k, const char *name, u64 file, const char *patches_dir) {
     const NupFile f = nup_file(file);
     u8 *nso = nx2_big_alloc(f.size, 0);
     int read = -1;
@@ -400,9 +416,22 @@ static int module_load(unsigned k, const char *name, u64 file) {
             return -1;
         }
     }
+    u8 build_id[NX2_IPS_BUILD_ID_SIZE];
+    memcpy(build_id, nso + 0x40, sizeof build_id);
     const u64 bss_size = r32(nso + 0x3C), dynstr_off = r32(nso + 0x90), dynstr_size = r32(nso + 0x94), dynsym_off = r32(nso + 0x98),
               dynsym_size = r32(nso + 0x9C);
     nx2_big_free(nso);
+    char bid_hex[65];
+    nx2_ips_format_build_id(build_id, bid_hex);
+    if (patches_dir && bid_hex[0]) {
+        const Nx2IpsSegment segs[3] = {
+            {mem[0], size[0]},
+            {mem[1], size[1]},
+            {mem[2], size[2]},
+        };
+        const IpsLogCtx ctx = {name, bid_hex};
+        nx2_ips_apply_dir(patches_dir, build_id, img, image_size, segs, 3, ips_log_cb, (void *)&ctx);
+    }
     const u64 mod0 = r32(img + 4);
     if (mod0 + 0x1C > image_size || memcmp(img + mod0, "MOD0", 4)) {
         nx2_log("[game] %s: no module header where its code says (%x)\n", name, mod0);
@@ -445,8 +474,8 @@ static int module_load(unsigned k, const char *name, u64 file) {
     strncpy(module_names[k], name, sizeof module_names[k] - 1);
     nx2_modules[k] = (Nx2Module){module_names[k], NULL, NULL, mem[2], (end + 0xFFF) & ~0xFFFull, mod0, dynamic, symtab, nsyms, strtab, strsz, module_object};
     nx2_images[k] = (Nx2Image){img, image_size, size[0], mem[1], size[1], svcs, count};
-    nx2_log("[game] %s: %u KB (code %x, read-only data from %x, data from %x, ends at %x); %u system calls\n", name, image_size >> 10, size[0], mem[1], mem[2],
-            nx2_modules[k].end, (u64)count);
+    nx2_log("[game] %s: %u KB (code %x, read-only data from %x, data from %x, ends at %x, build %s); %u system calls\n", name, image_size >> 10, size[0], mem[1], mem[2],
+            nx2_modules[k].end, bid_hex[0] ? bid_hex : "none", (u64)count);
     return 0;
 }
 
@@ -1335,11 +1364,18 @@ int nx2_game_open(const char *path) {
         return -1;
     }
     const Package with_code = nup_package(layers[code]);
+    char patches_dir[96] = "";
+    {
+        char candidate[96];
+        struct stat st;
+        snprintf(candidate, sizeof candidate, "sdmc:%s/exefs_patches", home);
+        if (!stat(candidate, &st) && S_ISDIR(st.st_mode)) strcpy(patches_dir, candidate);
+    }
     static const char *const order[] = {"main", "subsdk0", "subsdk1", "subsdk2", "subsdk3", "subsdk4", "subsdk5", "subsdk6", "subsdk7", "subsdk8", "subsdk9", "sdk"};
     for (u32 k = 0; k < sizeof order / sizeof *order; k++) {
         const s64 file = nup_find(with_code.exefs, order[k]);
         if (file < 0) continue;
-        if (nx2_module_count >= MODULES || module_load(nx2_module_count, order[k], (u64)file)) return -1;
+        if (nx2_module_count >= MODULES || module_load(nx2_module_count, order[k], (u64)file, patches_dir[0] ? patches_dir : NULL)) return -1;
         nx2_module_count++;
     }
     nx2_whole = (int)nx2_module_count;
