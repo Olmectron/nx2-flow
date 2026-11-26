@@ -1204,10 +1204,22 @@ int nx2_game_open(const char *path) {
     {  // what its own description asks of the console, which a program has from the title it is started over (main.c says both)
         const s64 npdm = nup_find(with_code.exefs, "main.npdm");
         u8 head[0x18];
-        if (npdm >= 0 && !nup_file((u64)npdm).codec && nup_file((u64)npdm).size >= sizeof head && !nup_read(nup_file((u64)npdm).at, head, sizeof head) &&
-            !memcmp(head, "META", 4)) {
+        int got_head = 0;
+        if (npdm >= 0) {
+            const NupFile f = nup_file((u64)npdm);
+            if (!f.codec && f.size >= sizeof head) {
+                got_head = !nup_read(f.at, head, sizeof head);
+            } else if (f.codec == 1 && f.size >= sizeof head && f.size <= (1u << 20) && f.kept && f.kept <= (1u << 20)) {
+                u8 *packed = nx2_big_alloc(f.kept, 0), *raw = nx2_big_alloc(f.size, 0);
+                if (packed && raw && !nup_read(f.at, packed, f.kept) && ZSTD_decompress(raw, f.size, packed, f.kept) == f.size)
+                    memcpy(head, raw, sizeof head), got_head = 1;
+                nx2_big_free(raw), nx2_big_free(packed);
+            }
+        }
+        if (got_head && !memcmp(head, "META", 4)) {
             nx2_game_remote_mb = r32(head + 0x10) >> 20, nx2_game_sysres_kb = r32(head + 0x14) >> 10;
             if (nx2_game_remote_mb > 4096) nx2_game_remote_mb = 0;
+            if (nx2_game_sysres_kb > (4096u << 10)) nx2_game_sysres_kb = 0;
         }
     }
 
