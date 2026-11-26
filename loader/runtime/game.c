@@ -257,6 +257,29 @@ static void *big_grown(void *old, u64 had, u64 want) {
     if (old) memcpy(p, old, had < want ? had : want), nx2_big_free(old);
     return p;
 }
+// Where the stretch may end, once the game's modules and tables are in it: after the last piece in use, and after that the room
+// the files unpacked as they are read need (cache: none for a game whose files are all kept as they are). 0: no less than now.
+// What is past that is the game's to have: main.c makes the program's heap that much smaller, and says so here (trimmed).
+// (A game that maps memory as it runs and uses all there is had 190 MB less from the loader than from its port, of which the
+// loader used none: it stopped for a moment every twenty or thirty seconds, which its port did not; 2026-11-26.)
+static u64 big_end_wanted(u64 cache) {
+    u64 end = 0;
+    while (__atomic_exchange_n(&pieces_lock, 1, __ATOMIC_ACQUIRE)) svcSleepThread(0);
+    if (npieces && nx2_big_size && !pieces[npieces - 1].used) {
+        const u64 want = pieces[npieces - 1].at + ((cache + 0xFFF) & ~0xFFFull);
+        if (want < pieces[npieces - 1].at + pieces[npieces - 1].size) end = want;
+    }
+    __atomic_store_n(&pieces_lock, 0, __ATOMIC_RELEASE);
+    return end;
+}
+void nx2_game_room_trimmed(u64 end) {
+    while (__atomic_exchange_n(&pieces_lock, 1, __ATOMIC_ACQUIRE)) svcSleepThread(0);
+    if (npieces && !pieces[npieces - 1].used && end > pieces[npieces - 1].at && end < pieces[npieces - 1].at + pieces[npieces - 1].size) {
+        pieces[npieces - 1].size = end - pieces[npieces - 1].at;
+        nx2_big_size = end - (u64)nx2_big_at;
+    }
+    __atomic_store_n(&pieces_lock, 0, __ATOMIC_RELEASE);
+}
 // what can still be had of it: all that is free, and the largest piece
 static void big_left(u64 *all, u64 *largest) {
     *all = *largest = 0;
@@ -892,7 +915,14 @@ u32 nx2_game_rom_read(u64 offset, u8 *to, u64 size, u64 *got) {
             if (e && in < e->data + e->size) {
                 if (take > e->data + e->size - in) take = e->data + e->size - in;
                 if (e->kind == 0) {
+                    // (a read that takes very long is said, a few dozen times at most: a game that stops for a moment as it
+                    // reads says here whether the card was what it waited for. Not every slow one: a line said is a wait too.)
+                    const u64 began = armGetSystemTick();
                     rc = nup_read(e->at + (in - e->data), to, take);
+                    const u64 ms = armTicksToNs(armGetSystemTick() - began) / 1000000;
+                    static u32 slow;
+                    if (ms >= 100 && slow++ < 48)
+                        nx2_log("[rom] a read of %u KB, %u MB into the NUP file, took %u ms\n", take >> 10, (e->at + (in - e->data)) >> 20, ms);
                 } else if (e->kind == 2) {
                     rc = loose_read(e->at, in - e->data, to, take);
                 } else {
@@ -1047,6 +1077,70 @@ static void setting(const char *key, char *to, u64 room) {
     fclose(f);
 }
 
+// <folder>/readtest: how fast the card gives pieces of the NUP file, measured before the game starts, and of one more file beside
+// it if the switch file names one (a path of the card, as "/folder/file"): for telling whether a file that was written on the
+// console is read slower than one written on a computer. Pieces of three sizes, from places all over the file and from places
+// each a little after the last.
+static void read_test(void) {
+    FILE *t = fopen(nx2_file("readtest"), "rb");
+    if (!t) return;
+    char other[256] = "";
+    if (fgets(other, sizeof other, t)) {
+        u64 n = strlen(other);
+        while (n && (other[n - 1] == '\n' || other[n - 1] == '\r' || other[n - 1] == ' ')) other[--n] = 0;
+    }
+    fclose(t);
+    static u8 piece[1 << 20] __attribute__((aligned(0x1000)));
+    FsFile second;
+    const int two = other[0] && R_SUCCEEDED(fsFsOpenFile(fsdevGetDeviceFileSystem("sdmc"), other, FsOpenMode_Read, &second));
+    static const u64 sizes[3] = {64u << 10, 256u << 10, 900u << 10};
+    for (int f = 0; f < (two ? 2 : 1); f++) {
+        FsFile *file = f ? &second : &nup.file;
+        s64 size = 0;
+        fsFileGetSize(file, &size);
+        for (int far = 1; far >= 0; far--)
+            for (int s = 0; s < 3; s++) {
+                u64 seed = 12345, at = (u64)size / 3, sum = 0, most = 0;
+                u32 bad = 0;
+                for (int k = 0; k < 48; k++) {
+                    seed = seed * 6364136223846793005ull + 1442695040888963407ull;
+                    if (far) at = (seed >> 20) % ((u64)size - (2u << 20));
+                    else at = (at + (4u << 20) + ((seed >> 40) & 0xFFFFF)) % ((u64)size - (2u << 20));
+                    u64 got = 0;
+                    const u64 began = armGetSystemTick();
+                    if (R_FAILED(fsFileRead(file, (s64)at, piece, sizes[s], FsReadOption_None, &got)) || got != sizes[s]) bad++;
+                    const u64 us = armTicksToNs(armGetSystemTick() - began) / 1000;
+                    sum += us;
+                    if (us > most) most = us;
+                }
+                nx2_log("[readtest] %s (%u MB): 48 pieces of %u KB, %s: %u ms each on average, the slowest %u ms%s\n", f ? other : "the NUP file", (u64)size >> 20,
+                        sizes[s] >> 10, far ? "from all over the file" : "each a few MB after the last", sum / 48 / 1000, most / 1000, bad ? " (SOME COULD NOT BE READ)" : "");
+            }
+    }
+    if (two) fsFileClose(&second);
+}
+
+// How far the loader's own stretch of memory has to reach for this game, as an address (0: as far as it does now). main.c asks
+// once the game is open, and gives the game what is past it.
+u64 nx2_game_room_end(void) {
+    u64 all = 0, largest = 0;
+    u32 packed = 0;
+    for (u32 k = 0; k < rom.nfiles; k++)
+        if (rom.files[k].kind == 1) {
+            packed++, all += rom.files[k].size;
+            if (rom.files[k].size > largest) largest = rom.files[k].size;
+        }
+    // The files unpacked as they are read: the room they are kept in and the largest of them besides, or all of them where
+    // that is less; and 16 MB over, for their being whole pages each. A game with none packed: 4 MB, for what isn't foreseen.
+    u64 cache = 4u << 20;
+    if (packed) {
+        cache = unpacked_room + largest;
+        if (cache > all) cache = all;
+        cache += 16u << 20;
+    }
+    return big_end_wanted(cache);
+}
+
 // 0: the game of this NUP file is ready to be started: its modules unpacked, its files' image made, its folder there.
 int nx2_game_open(const char *path) {
     if (nup_open(path)) return -1;
@@ -1178,6 +1272,7 @@ int nx2_game_open(const char *path) {
         if (mb >= 2048 && mb <= 8992) nx2_game_mb = mb, nx2_game_room_mb = 64, nx2_log("[game] game.cfg: the game is told of %u MB\n", (u64)mb);
     }
     room_said("with the game's modules and the table of its files in it");
+    read_test();
     return 0;
 }
 #endif

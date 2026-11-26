@@ -164,7 +164,21 @@ int main(int argc, char **argv) {
     }
     const char *which = argc >= 2 ? argv[1] : named[0] ? named : NULL;
     const int opened = which ? nx2_game_open(which) : -2;
+    // (The room kept for the game's modules, tables and unpacked files was a guess made before the game was known. Now that it
+    // is, what the loader won't use of it is the game's: the program's heap is made that much smaller, as it was made the
+    // host's part alone before. game.c says how far it needs to reach.)
+    u64 room_back = 0;
+    if (!opened && heap_given) {
+        const u64 end = nx2_game_room_end(), host = end > heap_at ? (end - heap_at + 0x1FFFFF) & ~0x1FFFFFull : 0;
+        void *at = NULL;
+        if (host && host < heap_host && R_SUCCEEDED(svcSetHeapSize(&at, host))) {
+            room_back = heap_host - host;
+            heap_given += room_back, heap_host = host;
+            nx2_game_room_trimmed(heap_at + host);
+        }
+    }
     nx2_log_start();
+    if (room_back) nx2_log("[nx2] %u MB of the room kept for the game's modules and files are not needed for this game: they are the game's to take\n", room_back >> 20);
     if (menu && envHasNextLoad()) envSetNextLoad(menu, menu);
     if (opened) {
         nx2_log("[nx2] %s: the game can't be started (the lines above say why)\n", which ? which : "no NUP file was named: this program is started by nx2-flow's menu");

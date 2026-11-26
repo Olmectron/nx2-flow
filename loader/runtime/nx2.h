@@ -41,6 +41,8 @@ extern u8 *nx2_big_at;                    // the stretch of the program's memory
 extern u64 nx2_big_size;
 void *nx2_big_alloc(u64 size, int low);   // whole pages of it (low: from its bottom, for what stays); null when there is none
 void nx2_big_free(void *piece);
+u64 nx2_game_room_end(void);              // how far that stretch has to reach for the game that was opened (0: as far as it does)
+void nx2_game_room_trimmed(u64 end);      // ... and that it ends there now: what was past it is the game's
 int nx2_merge_plan(const char *wish);     // merge.c: the modules that needn't be whole made into one image, when the game needs the room
 int nx2_merge_map(void *ro_service);      // ... and that image mapped by the loader service, after the modules kept whole
 u64 nx2_game_rom_size(void);               // the game's files as one image, made from the NUP's (and a mods folder's) as it is read
