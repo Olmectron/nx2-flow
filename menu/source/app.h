@@ -14,7 +14,7 @@
 
 namespace Flow {
 
-inline constexpr const char* kVersion = "0.2.4";
+inline constexpr const char* kVersion = "0.2.5";
 
 /// What was pressed since the last frame (a direction held repeats: the caller sees to it).
 struct Input {
