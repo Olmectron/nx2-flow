@@ -10,6 +10,10 @@
 A launcher for Switch 2 games kept as **NUP files** on the card: a shelf of your games, in the manner of WiiFlow, and a loader
 that runs the one you pick straight from its NUP file. Nothing is built for each game on a computer.
 
+![The shelf, on the console: seven cases with no cover yet](docs/shelf.jpg)
+
+*The shelf as the console shows it (one of its eight styles), with stand-in games that have neither a name nor a cover.*
+
 **Work in progress.** It has been tried with few games and one setup (kaiHEN 20261117.1).
 
 ## The three programs
