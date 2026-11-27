@@ -20,6 +20,15 @@ void nx2_heap_set(void *base, u64 size) { heap_base = base, heap_max = size; }
 // the game is told it has, and the most it may ask as a heap.
 static u64 live_base, live_host;
 void nx2_heap_live(u64 base, u64 host, u64 most) { live_base = base, live_host = host, heap_max = most; }
+// (<folder>/vam: the pool for the game's address regions comes after the host's part, before the game's heap, and is the host's
+// from then on: the game's SetHeapSize makes the kernel's heap the host's part, the pool and what it asks; vam.c)
+void nx2_heap_pool(u64 mb) {
+    if (!live_base) {
+        nx2_log("[vam] <folder>/vam is there, but this game's heap is not the kernel's own: no pool\n");
+        return;
+    }
+    live_host += nx2_vam_init(live_base, live_host, mb);
+}
 
 static u32 counts[0xC0];
 
@@ -996,8 +1005,28 @@ int nx2_svc(u64 *r, u32 n) {
         // (A Switch 2 game's own: a game ends itself at its start unless the memory in use is less than its "Program"
         // heap, 250 MB in its HeapDef file, which is the program alone on its console; main+5c9f58, log, 2026-11-24. Here the host's
         // share is in use as well. So the game is told of a console with its heap and a program of 128 MB, and nothing else.)
-        if ((type == 6 || type == 7 || type == 21 || type == 22) && heap_max) {
+        if ((type == 6 || type == 7 || type == 21 || type == 22) && heap_max && !nx2_vam) {
             r[0] = 0, r[1] = (128ull << 20) + (type == 6 || type == 21 ? heap_max : 0);
+            return 1;
+        }
+        // Started over a title with no system resource, with the pool of vam.c taken (and only then: nothing changes for a game
+        // started over a title that has some):
+        if ((type == 6 || type == 7 || type == 21 || type == 22) && heap_max) {
+            // (The program, as told: its modules and 2 MB, 128 MB at the most. A Switch game's HeapDef has a "Program" heap of
+            // 87040 KB (85 MB) and modules of 70 MB: told of 128 MB it ended itself at the check, and told of its modules and
+            // 16 MB (86 MB) as well; logs and its HeapDef, 2026-11-26.)
+            static u64 program;
+            if (!program) {
+                u64 bytes = 2ull << 20;
+                for (unsigned k = 0; k < nx2_module_count; k++) bytes += nx2_modules[k].end;
+                bytes = (bytes + 0xFFFFF) & ~0xFFFFFull;
+                program = bytes < (128ull << 20) ? bytes : (128ull << 20);
+                nx2_log("[nx2] the game is told its program is %u MB of the memory in use (its modules, and 2 MB)\n", program >> 20);
+            }
+            // (Memory in use counts the heap the game has set, as on its console: nn::os::QueryMemoryInfo takes the heap from it
+            // to find the program's size, and with the program alone said to be in use after the game had set a heap of 7242 MB,
+            // that came out below nothing and the same game ended itself at the same check; log, 2026-11-26.)
+            r[0] = 0, r[1] = program + (type == 6 || type == 21 ? heap_max : heap_now);
             return 1;
         }
 #endif
