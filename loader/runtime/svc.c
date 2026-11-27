@@ -966,7 +966,17 @@ int nx2_svc(u64 *r, u32 n) {
         const u32 rc = n == 0x2C ? svcMapPhysicalMemory((void *)r[0], r[1]) : svcUnmapPhysicalMemory((void *)r[0], r[1]);
         static u64 mapped;
         static u32 said;
-        const u64 now = n == 0x2C ? __atomic_add_fetch(&mapped, rc ? 0 : r[1], __ATOMIC_RELAXED) : __atomic_sub_fetch(&mapped, rc ? 0 : r[1], __ATOMIC_RELAXED);
+        u64 now;
+        if (rc) {
+            now = __atomic_load_n(&mapped, __ATOMIC_RELAXED);
+        } else if (n == 0x2C) {
+            now = __atomic_add_fetch(&mapped, r[1], __ATOMIC_RELAXED);
+        } else {
+            u64 cur = __atomic_load_n(&mapped, __ATOMIC_RELAXED);
+            do {
+                now = cur > r[1] ? cur - r[1] : 0;
+            } while (!__atomic_compare_exchange_n(&mapped, &cur, now, 1, __ATOMIC_RELAXED, __ATOMIC_RELAXED));
+        }
         const u32 k = __atomic_add_fetch(&said, 1, __ATOMIC_RELAXED);
         // (A refusal is said the first sixteen times and then at each power of two, not every time: a line's caller waits until
         // the card has the line, log.c, and a game that has taken all the memory there is and asks for more at every picture, sixty
@@ -978,7 +988,7 @@ int nx2_svc(u64 *r, u32 n) {
             svcGetInfo(&total, InfoType_TotalMemorySize, CUR_PROCESS_HANDLE, 0);
             svcGetInfo(&used, InfoType_UsedMemorySize, CUR_PROCESS_HANDLE, 0);
             nx2_log("[svc] %s of %x bytes at %x: %x%s (call %u; %u KB mapped so; the process has %u KB free)\n", n == 0x2C ? "MapPhysicalMemory" : "UnmapPhysicalMemory",
-                    r[1], r[0], (u64)rc, rc ? " (REFUSED)" : "", (u64)k, now >> 10, (total - used) >> 10);
+                    r[1], r[0], (u64)rc, rc ? " (REFUSED)" : "", (u64)k, now >> 10, (total > used ? total - used : 0) >> 10);
 #ifdef __SWITCH2__
             // (What the graphics server holds in this process's name, "remote memory": the two figures the SDK itself asks for when
             // a mapping of the game's is refused for lack of it; nn::os::GetRemoteMemoryUsage, report of 2026-11-25.)
