@@ -29,6 +29,7 @@ s64 nx2_zbic_to_zstd(const u8 *data, u64 size, u8 *out, u64 room);  // zbic.c
 // ---------------------------------------------------------------- what a port is built with
 #define MODULES 12
 char nx2_game_id[17] = "unknown";
+char nx2_game_display_version[16];
 // (What the game is told of memory, as a port is built: with no figure given and nothing kept apart, what there really is less
 // 400 MB, 8192 at most; the console's 8992 for a game whose table of heaps keeps a stretch apart; game.cfg's figure otherwise.
 // tools/build.py and main.c have the story.)
@@ -117,6 +118,44 @@ typedef struct {
 static Package nup_package(u32 k) {
     const u8 *p = nup.packages + 0x40 * k;
     return (Package){r64(p), r64(p + 0x20), r32(p + 8), r32(p + 12), r32(p + 16), r32(p + 20), r32(p + 0x28), p[24]};
+}
+// Extract the display version string (up to 15 chars + NUL) from a NUP package's TLV metadata block
+// (matching menu/source/nup.cpp: facts are numbered from 0 or 1; NPDM begins with "META", prefer kDisplayVersion = first_fact + 3,
+// fall back to kNacp = first_fact + 1 at offset 0x3060).
+int nx2_nup_meta_display_version(const u8 *block, u32 block_size, char out[16]) {
+    if (!block || block_size < 8 || !out) return 0;
+    int first_fact = -1;
+    for (u32 at = 0; at + 8 <= block_size;) {
+        const u16 kind = (u16)(block[at] | (u16)block[at + 1] << 8);
+        const u32 sz = r32(block + at + 4);
+        if (sz > block_size - (at + 8)) break;
+        if (sz >= 4 && !memcmp(block + at + 8, "META", 4)) {
+            first_fact = (int)kind;
+            break;
+        }
+        at += 8 + sz;
+    }
+    if (first_fact < 0) first_fact = 0;
+    if (first_fact > 0xFFFC) return 0;
+    const u8 *dv = NULL, *nacp = NULL;
+    u32 dv_sz = 0, nacp_sz = 0;
+    for (u32 at = 0; at + 8 <= block_size;) {
+        const u16 kind = (u16)(block[at] | (u16)block[at + 1] << 8);
+        const u32 sz = r32(block + at + 4);
+        if (sz > block_size - (at + 8)) break;
+        if (kind == (u16)(first_fact + 3) && sz > 0) dv = block + at + 8, dv_sz = sz;
+        else if (kind == (u16)(first_fact + 1) && sz >= 0x3070) nacp = block + at + 8, nacp_sz = sz;
+        at += 8 + sz;
+    }
+    const u8 *src = NULL;
+    u32 max_len = 0;
+    if (dv && dv[0]) src = dv, max_len = dv_sz < 15 ? dv_sz : 15;
+    else if (nacp && nacp_sz >= 0x3070 && nacp[0x3060]) src = nacp + 0x3060, max_len = 15;
+    if (!src) return 0;
+    u32 n = 0;
+    while (n < max_len && src[n]) out[n] = (char)src[n], n++;
+    out[n] = 0;
+    return n > 0;
 }
 // a file of a folder, by name: its number, or -1
 static s64 nup_find(u32 dir, const char *name) {
@@ -1435,6 +1474,18 @@ int nx2_game_open(const char *path) {
             if (nx2_game_remote_mb > 4096) nx2_game_remote_mb = 0;
             if (nx2_game_sysres_kb > (4096u << 10)) nx2_game_sysres_kb = 0;
         }
+    }
+    {  // display version from the newest package's metadata/NACP (for IApplicationFunctions::GetDisplayVersion)
+        nx2_game_display_version[0] = 0;
+        for (u32 k = count; k > 0 && !nx2_game_display_version[0]; k--) {
+            const Package p = nup_package(layers[k - 1]);
+            if (!p.meta_size || p.meta_size > (8u << 20) || p.meta_at > nup.size || p.meta_size > nup.size - p.meta_at) continue;
+            u8 *meta = nx2_big_alloc(p.meta_size, 0);
+            if (meta && !nup_read(p.meta_at, meta, p.meta_size))
+                nx2_nup_meta_display_version(meta, p.meta_size, nx2_game_display_version);
+            nx2_big_free(meta);
+        }
+        if (nx2_game_display_version[0]) nx2_log("[game] display version from NUP: \"%s\"\n", nx2_game_display_version);
     }
 
     // the files: each package's over the ones before, then the user's own folder

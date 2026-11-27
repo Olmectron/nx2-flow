@@ -31,7 +31,9 @@ typedef int32_t s32;
 #undef NX2_TOOL
 #define NX2_TOOL "nx2-flow"
 #define NX2_NAME nx2_game_id
-extern char nx2_game_id[17];           // the title id, 16 hex digits
+extern char nx2_game_id[17];               // the title id, 16 hex digits
+extern char nx2_game_display_version[16];  // display version from the NUP file's metadata/NACP (empty if absent)
+int nx2_nup_meta_display_version(const u8 *block, u32 block_size, char out[16]);
 const char *nx2_home(void);            // "/nx2-flow/<title id>", as the file system service is given it
 const char *nx2_file(const char *name);  // "sdmc:/nx2-flow/<title id>/<name>": good until eight more have been asked for
 #define NX2_F(name) nx2_file(name)
