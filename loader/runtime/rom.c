@@ -730,7 +730,7 @@ static int in_folder(u8 *m, u32 cmd, int plain, const char *folder, char (*paths
     if (cmd == 16) ok = plain && inline_request_size(m) == 16;  // GetFileSystemAttribute (HOS 15.0+, 0 paths)
     for (u32 k = 0; ok && k < count; k++) {
         const u32 w = rd32(x + k * 8);
-        const char *from = (const char *)(rd32(x + k * 8 + 4) | (u64)(w >> 12 & 15) << 32 | (u64)(w >> 6 & 7) << 36);
+        const char *from = (const char *)(rd32(x + k * 8 + 4) | (u64)(w >> 12 & 15) << 32 | (u64)(w >> 6 & 0x3F) << 36);
         const u32 size = w >> 16;
         char *to = paths[k];
         u32 n = 0;
@@ -747,7 +747,7 @@ static int in_folder(u8 *m, u32 cmd, int plain, const char *folder, char (*paths
         to[n] = 0;
         if (!ok) break;
         if (save_logged < 24) save_logged++, nx2_log("[save] command %u, %s\n", (u64)cmd, to);
-        wr32(x + k * 8, (w & 0xE3F) | (u32)((u64)to >> 32 & 15) << 12 | (u32)((u64)to >> 36 & 7) << 6 | 0x301u << 16);
+        wr32(x + k * 8, (w & 0x3Fu) | (u32)((u64)to >> 32 & 15) << 12 | (u32)((u64)to >> 36 & 0x3F) << 6 | 0x301u << 16);
         wr32(x + k * 8 + 4, (u32)(u64)to);
     }
     if (!ok) nx2_log("[save] a request to the save data's file system that isn't understood (command %d, %u paths): refused\n", (s64)(s32)cmd, (u64)count);
