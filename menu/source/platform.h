@@ -7,7 +7,12 @@
 
 #include <string>
 
+#include "diagnostics.h"
+
 namespace Platform {
+
+/// Snapshot of the active host title (Program ID, memory, remote GPU memory, SysRes, applet mode).
+Flow::HostInfo QueryHost();
 
 /// Whether the machine is on a network at all.
 bool HasNetwork();

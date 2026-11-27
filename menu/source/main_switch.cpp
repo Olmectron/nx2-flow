@@ -241,6 +241,29 @@ int Get(const std::string& url, const std::string& to_file, std::string& moved, 
 
 } // namespace
 
+Flow::HostInfo QueryHost() {
+    Flow::HostInfo info;
+    info.available = true;
+    u64 value = 0;
+    if (R_SUCCEEDED(svcGetInfo(&value, InfoType_ProgramId, CUR_PROCESS_HANDLE, 0))) {
+        info.program_id = value;
+    }
+    if (R_SUCCEEDED(svcGetInfo(&value, InfoType_TotalMemorySize, CUR_PROCESS_HANDLE, 0))) {
+        info.total_memory = value;
+    }
+    if (R_SUCCEEDED(svcGetInfo(&value, InfoType_SystemResourceSizeTotal, CUR_PROCESS_HANDLE, 0))) {
+        info.sysres_memory = value;
+        info.has_sysres = true;
+    }
+    if (R_SUCCEEDED(svcGetInfo(&value, 31u, CUR_PROCESS_HANDLE, 0))) {
+        info.remote_gpu_memory = value;
+        info.has_remote_gpu = true;
+    }
+    const AppletType type = appletGetAppletType();
+    info.is_applet = (type == AppletType_LibraryApplet || type == AppletType_SystemApplet || type == AppletType_OverlayApplet);
+    return info;
+}
+
 bool HasNetwork() {
     static bool nifm_ready = false;
     if (!nifm_ready) {

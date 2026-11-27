@@ -24,9 +24,23 @@ namespace {
 std::string g_address = "192.168.0.50";
 std::string g_typed; // What the keyboard "gives"; empty: no name given.
 Transfer::State g_transfer;
+Flow::HostInfo g_host = [] {
+    Flow::HostInfo info;
+    info.available = true;
+    info.program_id = 0x0400F00000001000ull;
+    info.total_memory = 9120ull << 20;
+    info.remote_gpu_memory = 192ull << 20;
+    info.has_remote_gpu = true;
+    info.sysres_memory = 64ull << 20;
+    info.has_sysres = true;
+    return info;
+}();
 } // namespace
 
 namespace Platform {
+Flow::HostInfo QueryHost() {
+    return g_host;
+}
 bool HasNetwork() {
     return false;
 }
@@ -331,5 +345,24 @@ int main(int argc, char** argv) {
     none.app.Start();
     none.Press({}, 30);
     none.Shot("45-no-games");
+
+    // in-app crash report viewer + Switch 1 host warning on the Game Sheet
+    Flow::SetCardRoot(argv[1]);
+    g_host.program_id = 0x0100AABB00001000ull;
+    g_host.total_memory = 6900ull << 20;
+    g_host.remote_gpu_memory = 96ull << 20;
+    g_host.sysres_memory = 0;
+    Run diag;
+    diag.out = argv[2];
+    diag.app.Start();
+    diag.Press({}, 120);
+    diag.Press(Key('R'), 60); // second game (has crash.txt and log.txt)
+    diag.Press(Key('y'));
+    diag.Shot("46-sheet-host-warning");
+    diag.Press(Key('D'), 4, 10); // to "View crash log"
+    diag.Press(Key('a'), 30);
+    diag.Shot("47-crash-viewer");
+    diag.Press(Key('x'), 30); // switch to log.txt
+    diag.Shot("48-log-viewer");
     return 0;
 }
