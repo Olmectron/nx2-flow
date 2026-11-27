@@ -1409,6 +1409,8 @@ int nx2_game_open(const char *path) {
         setting("modules", wish, sizeof wish);
         if (nx2_merge_plan(wish)) return -1;
     }
+    int got_npdm = 0;
+    u32 sysres_bytes = 0;
     {  // what its own description asks of the console, which a program has from the title it is started over (main.c says both)
         const s64 npdm = nup_find(with_code.exefs, "main.npdm");
         u8 head[0x18];
@@ -1427,7 +1429,9 @@ int nx2_game_open(const char *path) {
             }
         }
         if (got_head && !memcmp(head, "META", 4)) {
-            nx2_game_remote_mb = r32(head + 0x10) >> 20, nx2_game_sysres_kb = r32(head + 0x14) >> 10;
+            got_npdm = 1;
+            sysres_bytes = r32(head + 0x14);
+            nx2_game_remote_mb = r32(head + 0x10) >> 20, nx2_game_sysres_kb = sysres_bytes >> 10;
             if (nx2_game_remote_mb > 4096) nx2_game_remote_mb = 0;
             if (nx2_game_sysres_kb > (4096u << 10)) nx2_game_sysres_kb = 0;
         }
@@ -1560,7 +1564,16 @@ int nx2_game_open(const char *path) {
         char memory[16];
         setting("memory", memory, sizeof memory);
         const u32 mb = (u32)strtoul(memory, NULL, 10);
-        if (mb >= 2048 && mb <= 8992) nx2_game_mb = mb, nx2_game_room_mb = 64, nx2_log("[game] game.cfg: the game is told of %u MB\n", (u64)mb);
+        if (mb >= 2048 && mb <= 8992) {
+            nx2_game_mb = mb, nx2_game_room_mb = 64;
+            nx2_log("[game] game.cfg: the game is told of %u MB\n", (u64)mb);
+        } else if (got_npdm && !nx2_game_sysres_kb && !sysres_bytes && !nx2_game_apart_mb) {
+            // A game whose main.npdm asks for 0 MB of system resource cannot call MapPhysicalMemory outside its heap on the
+            // console, so keeping 400 MB of slack outside its heap only starves it (e.g. OOM at startup when it sizes its
+            // allocator by what is free). Give it all free heap with 64 MB slack unless HeapDef.byml or game.cfg decided.
+            nx2_game_mb = 8992, nx2_game_room_mb = 64;
+            nx2_log("[game] main.npdm asks for 0 MB system resource: giving the game all free heap (slack 64 MB)\n");
+        }
     }
     room_said("with the game's modules and the table of its files in it");
     read_test();
