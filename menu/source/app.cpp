@@ -380,7 +380,9 @@ Request App::UpdateShelf(const Input& in) {
         } else {
             const Nup::HealthReport report = Nup::CheckHealth(NupPartsOf(game));
             Request req = BuildLaunchRequest(game);
-            if (report.status == Nup::HealthStatus::Ok) {
+            // (Asked only for a file that looks broken. What the check merely warns of, a large packed file or parts of
+            // unequal sizes, the loader reads as any other: those are said on the "Check file" screen, not at every start.)
+            if (report.status != Nup::HealthStatus::Error) {
                 Finish();
                 return req;
             }

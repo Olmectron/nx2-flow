@@ -479,7 +479,7 @@ bool CopyFileAtomic(const std::string& src_path, const std::string& dst_path,
     }
     if (std::rename(tmp_path.c_str(), dst_path.c_str()) != 0) {
         const int err = errno;
-        bool renamed = false;
+        bool renamed = false, removed = false;
         // Horizon OS (fsFsRenameFile) and Windows refuse rename() onto an existing file.
         if (err == EEXIST
 #ifdef _WIN32
@@ -487,12 +487,17 @@ bool CopyFileAtomic(const std::string& src_path, const std::string& dst_path,
 #endif
         ) {
             if (std::remove(dst_path.c_str()) == 0) {
+                removed = true;
                 renamed = std::rename(tmp_path.c_str(), dst_path.c_str()) == 0;
             }
         }
         if (!renamed) {
-            std::remove(tmp_path.c_str());
-            error = name + " couldn't be copied (is the card full?)";
+            // (With the old file already gone, the whole new copy is all there is of it: kept, under its ".tmp" name.)
+            if (!removed) {
+                std::remove(tmp_path.c_str());
+            }
+            error = removed ? name + " was copied but couldn't be given its name: it is kept as " + name + ".tmp"
+                            : name + " couldn't be copied (is the card full?)";
             return false;
         }
     }

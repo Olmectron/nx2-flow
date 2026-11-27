@@ -120,7 +120,7 @@ void TestHostClassification() {
         Check(Flow::HostWarningBody(info).find("0400...") != std::string::npos, "Switch 1 warning body recommends 0400... host");
     }
 
-    // 5. Applet host (e.g. Album 010000000000100D, is_applet = true).
+    // 5. Applet host (a system applet's id, is_applet = true).
     {
         Flow::HostInfo info;
         info.available = true;
