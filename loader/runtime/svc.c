@@ -108,10 +108,10 @@ static const char *session_name(u32 h) {
         if (sessions[k].handle == h) return sessions[k].name;
     return "?";
 }
-// (the sessions the port answers for: the file system's, the applet's, add-on content's, and sm: itself)
+// (the sessions the port answers for: the file system's, the applet's, add-on content's, the loader's, and sm: itself)
 static int session_kept(const char *n) {
     return (n[0] == 'f' && n[1] == 's' && n[2] == 'p') || (n[0] == 'a' && n[1] == 'p' && n[2] == 'p') || (n[0] == 'a' && n[1] == 'o' && n[2] == 'c') ||
-           (n[0] == 's' && n[1] == 'm' && n[2] == ':') || n[0] == '~';
+           (n[0] == 'l' && n[1] == 'd' && n[2] == 'r') || (n[0] == 's' && n[1] == 'm' && n[2] == ':') || n[0] == '~';
 }
 static void session_forget(u32 h) {  // the handle is being closed: its number may be another session's next
     sessions_take();
@@ -413,10 +413,11 @@ static int stood_plain(const char *service, u32 cmd, u32 *out0, u32 *out1) {
 // a request on such a session, answered here
 static void stood_answer(u64 *r, u8 *m, u32 h, const char *who) {
     const u32 type = rd32(m) & 0xFFFF, index = (u32)(who[2] - 'A') % STOOD;
-    const int domain = who[1] == 'd', control = type == 5 || type == 7;
     const u8 *q = payload(m, "SFCI");
-    const u32 cmd = q ? rd32(q + 8) : ~0u;
-    if (type == 2) {  // the session is closed: what the kernel says of one
+    const int tipc = !q && type >= 16;
+    const int domain = !tipc && who[1] == 'd', control = !tipc && (type == 5 || type == 7);
+    const u32 cmd = q ? rd32(q + 8) : tipc ? type - 16 : ~0u;
+    if (type == 2 || type == 15) {  // the session is closed (CMIF 2 or TIPC 15): what the kernel says of one
         r[0] = 0xF601;
         return;
     }
@@ -443,7 +444,7 @@ static void stood_answer(u64 *r, u8 *m, u32 h, const char *who) {
         // the eight bytes before "SFCI"'s sixteen)
         const u8 *dom = domain && q && q - m >= 16 ? q - 16 : NULL;
         const int first = dom ? rd32(dom + 4) == 0x100 : who[1] == 'n';
-        const u32 in_bytes = dom ? (u32)dom[2] | (u32)dom[3] << 8 : q ? (w1 & 0x3FF) * 4 - (u32)(q - m - 8) : 0;
+        const u32 in_bytes = dom ? (u32)dom[2] | (u32)dom[3] << 8 : q ? (w1 & 0x3FF) * 4 - (u32)(q - m - 8) : tipc ? (w1 & 0x3FF) * 4 : 0;
         result = stood_result(who + 3, first, in_bytes, reads);
         // (In a domain a new object is a number, not a handle, and it comes after whatever else the answer has: right after
         // the answer's header for a command that hands back an object and nothing else, as the ones that open an interface do
@@ -469,10 +470,16 @@ static void stood_answer(u64 *r, u8 *m, u32 h, const char *who) {
         if (copy) put32(m + o, copy), o += 4;
         if (move) put32(m + o, move), o += 4;
     }
-    u8 *d = m + ((o + 15) & ~15u);
-    if (domain && !control) put32(d, object ? 1 : 0), d += 16;  // (a domain's answer begins with how many objects it hands back)
-    put32(d, 0x4F434653), put32(d + 8, result), put32(d + 16, control ? word : plain ? out0 : object);  // "SFCO", the result; then the one number, or the new object's
-    if (plain) put32(d + 20, out1);
+    if (tipc) {
+        // TIPC answers carry no 16-byte alignment padding and no "SFCO" header: Result begins at m + o immediately.
+        put32(m + o, result);
+        if (plain) put32(m + o + 4, out0), put32(m + o + 8, out1);
+    } else {
+        u8 *d = m + ((o + 15) & ~15u);
+        if (domain && !control) put32(d, object ? 1 : 0), d += 16;  // (a domain's answer begins with how many objects it hands back)
+        put32(d, 0x4F434653), put32(d + 8, result), put32(d + 16, control ? word : plain ? out0 : object);  // "SFCO", the result; then the one number, or the new object's
+        if (plain) put32(d + 20, out1);
+    }
     put32(m + 4, ((copy || move) ? 0x80000000u : 0) | (0xF0 - o) / 4);
     r[0] = 0;
 }
@@ -671,12 +678,21 @@ static void send_sync(u64 *r, const char *module, u64 off, int log) {
             for (u32 k = 0; k < 0x100; k++) refusal[k] = m[k];
             if (never_stood(text))
                 nx2_log("[ipc]   and the port can't stand in for that one: a game that needs it needs another game to be started over\n");
-            else if (stood_count < STOOD && (forced || !family_given(m, asked, h, text)) && (mine = stood_handle()) != 0) {
-                const u32 index = stood_count++;
-                for (u32 k = 0; k < 9; k++) stood[index].name[k] = text[k];
-                stood_set(mine, 0, index, text);
-                nx2_log("[ipc]   THE PORT STANDS IN FOR \"%s\": the game is given a session that answers every request with nothing. What the game "
-                        "does with that service won't work; the game itself goes on\n", text);
+            else if (__atomic_load_n(&stood_count, __ATOMIC_RELAXED) < STOOD && (forced || !family_given(m, asked, h, text))) {
+                u32 index = __atomic_load_n(&stood_count, __ATOMIC_RELAXED);
+                int claimed = 0;
+                while (index < STOOD) {
+                    if (__atomic_compare_exchange_n(&stood_count, &index, index + 1, 0, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
+                        claimed = 1;
+                        break;
+                    }
+                }
+                if (claimed && (mine = stood_handle()) != 0) {
+                    for (u32 k = 0; k < 9; k++) stood[index].name[k] = text[k];
+                    stood_set(mine, 0, index, text);
+                    nx2_log("[ipc]   THE PORT STANDS IN FOR \"%s\": the game is given a session that answers every request with nothing. What the game "
+                            "does with that service won't work; the game itself goes on\n", text);
+                }
             }
             if (mine) {  // the answer sm: would have given, in the form the game's SDK asked in: a handle, and "done"
                 for (u32 k = 0; k < 0x100; k++) m[k] = 0;
@@ -816,6 +832,16 @@ int nx2_svc(u64 *r, u32 n) {
     }
     if (n == 0x18 && r[1] && r[2] >= 1 && r[2] <= 64) {  // WaitSynchronization(out index, handles, count, timeout)
         const u32 *all = (const u32 *)r[1];
+#ifdef __SWITCH2__
+        // The applet's event, with the focus message still to give: handle both single-handle and multi-handle waits
+        if (applet_message && applet_event) {
+            for (u32 k = 0; k < (u32)r[2]; k++)
+                if (all[k] == applet_event) {
+                    r[0] = 0, r[1] = k;
+                    return 1;
+                }
+        }
+#endif
         u32 real[64], place[64], count = 0, mine = 0;
         for (u32 k = 0; k < (u32)r[2]; k++) {
             if (STOOD_HANDLE(all[k])) mine++;
@@ -829,14 +855,6 @@ int nx2_svc(u64 *r, u32 n) {
         }
     }
     switch (n) {
-#ifdef __SWITCH2__
-    case 0x18:  // WaitSynchronization(out index, handles, count, timeout): the applet's event, with the message above still to give
-        if (applet_message && applet_event && r[2] == 1 && *(const u32 *)r[1] == applet_event) {
-            r[0] = 0, r[1] = 0;
-            return 1;
-        }
-        return 0;
-#endif
     case 0x29: {  // GetInfo(out, type, handle, sub)
         // Memory in use (7, and 22 without the system's part): the host library has taken nearly all of it for its own heap, so a
         // game that sizes its heap by what is free (total - used) got 2 MB and its first large allocation failed (A game's nninitStartup; log, 2026-11-22). What's free, as the game is told, is the block set aside for its heap.
