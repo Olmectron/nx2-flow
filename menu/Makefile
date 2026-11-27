@@ -41,7 +41,7 @@ OBJECTS  := $(foreach s,$(SOURCES),$(OUT)/$(s).o)
 HOSTCXX  ?= g++
 PYTHON   ?= python
 
-.PHONY: all clean preview nettest partstest nacptest font
+.PHONY: all clean preview nettest partstest nacptest copytest font
 all: $(OUT)/$(TARGET).nro
 
 $(OUT):
@@ -85,6 +85,11 @@ partstest:
 nacptest:
 	mkdir -p $(OUT)/preview
 	$(HOSTCXX) -std=gnu++20 -O2 -Wall -Isource -I$(PARTS) preview/nacp_test.cpp source/nup.cpp source/images.cpp -o $(OUT)/preview/nacp_test$(EXE)
+
+# Host unit tests for atomic CopyFolder staging and write-error rollback.
+copytest:
+	mkdir -p $(OUT)/preview
+	$(HOSTCXX) -std=gnu++20 -O2 -Wall -Isource -I$(PARTS) preview/copy_test.cpp source/library.cpp source/nup.cpp source/images.cpp -o $(OUT)/preview/copy_test$(EXE)
 
 font:
 	$(PYTHON) tools/bake_font.py
