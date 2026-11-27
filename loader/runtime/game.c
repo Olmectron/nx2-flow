@@ -21,6 +21,7 @@
 #include <zstd.h>  // (third_party/zstd: Zstandard's own decoder)
 
 #include "nx2.h"
+#include "spinlock.h"
 #include "nupparts.h"  // (a NUP file kept in parts, for a card that takes no file of 4 GB)
 void nx2_log(const char *fmt, ...);
 void nx2_log_flush(void);
@@ -254,7 +255,7 @@ void *nx2_big_alloc(u64 size, int low) {
     size = (size + 0xFFF) & ~0xFFFull;
     if (!size) size = 0x1000;
     if (!nx2_big_size) return aligned_alloc(0x1000, size);  // (nothing was kept for it: the allocator's own, as before)
-    while (__atomic_exchange_n(&pieces_lock, 1, __ATOMIC_ACQUIRE)) svcSleepThread(0);
+    nx2_spin_lock(&pieces_lock);
     if (!npieces) pieces[0].at = (u64)nx2_big_at, pieces[0].size = nx2_big_size, pieces[0].used = 0, npieces = 1;
     int found = -1;
     for (u32 k = 0; k < npieces; k++)
@@ -284,7 +285,7 @@ void nx2_big_free(void *p) {
         free(p);
         return;
     }
-    while (__atomic_exchange_n(&pieces_lock, 1, __ATOMIC_ACQUIRE)) svcSleepThread(0);
+    nx2_spin_lock(&pieces_lock);
     for (u32 k = 0; k < npieces; k++) {
         if (pieces[k].at != (u64)p || !pieces[k].used) continue;
         pieces[k].used = 0;
@@ -316,7 +317,7 @@ static void *big_grown(void *old, u64 had, u64 want, int low) {
 // loader used none: it stopped for a moment every twenty or thirty seconds, which its port did not; 2026-11-26.)
 static u64 big_end_wanted(u64 cache) {
     u64 end = 0;
-    while (__atomic_exchange_n(&pieces_lock, 1, __ATOMIC_ACQUIRE)) svcSleepThread(0);
+    nx2_spin_lock(&pieces_lock);
     if (npieces && nx2_big_size && !pieces[npieces - 1].used) {
         const u64 want = pieces[npieces - 1].at + ((cache + 0xFFF) & ~0xFFFull);
         if (want < pieces[npieces - 1].at + pieces[npieces - 1].size) end = want;
@@ -325,7 +326,7 @@ static u64 big_end_wanted(u64 cache) {
     return end;
 }
 void nx2_game_room_trimmed(u64 end) {
-    while (__atomic_exchange_n(&pieces_lock, 1, __ATOMIC_ACQUIRE)) svcSleepThread(0);
+    nx2_spin_lock(&pieces_lock);
     if (npieces && !pieces[npieces - 1].used && end > pieces[npieces - 1].at && end < pieces[npieces - 1].at + pieces[npieces - 1].size) {
         pieces[npieces - 1].size = end - pieces[npieces - 1].at;
         nx2_big_size = end - (u64)nx2_big_at;
@@ -335,7 +336,7 @@ void nx2_game_room_trimmed(u64 end) {
 // what can still be had of it: all that is free, and the largest piece
 static void big_left(u64 *all, u64 *largest) {
     *all = *largest = 0;
-    while (__atomic_exchange_n(&pieces_lock, 1, __ATOMIC_ACQUIRE)) svcSleepThread(0);
+    nx2_spin_lock(&pieces_lock);
     if (!npieces && nx2_big_size) *all = *largest = nx2_big_size;
     for (u32 k = 0; k < npieces; k++)
         if (!pieces[k].used) {
@@ -813,7 +814,7 @@ static struct {
 static u64 kept_clock;
 static u32 kept_lock;
 static u32 loose_read(u64 which, u64 offset, u8 *to, u64 size) {
-    while (__atomic_exchange_n(&kept_lock, 1, __ATOMIC_ACQUIRE)) svcSleepThread(0);
+    nx2_spin_lock(&kept_lock);
     int slot = -1, oldest = -1;
     for (int k = 0; k < OPEN; k++)
         if (kept[k].open && kept[k].at == which) slot = k;
@@ -858,9 +859,9 @@ static volatile u32 asked_rom, asked_file = NONE, asked_state, asked_rc;  // (st
 static Thread unpacker;
 static int unpacker_up;
 static void take(u32 *lock) {
-    while (__atomic_exchange_n(lock, 1, __ATOMIC_ACQUIRE)) svcSleepThread(0);
+    nx2_spin_lock(lock);
 }
-static void give(u32 *lock) { __atomic_store_n(lock, 0, __ATOMIC_RELEASE); }
+static void give(u32 *lock) { nx2_spin_unlock(lock); }
 // How much of the loader's own memory can still be had, found by asking: the largest piece, and how much in pieces of 8 MB.
 // (Only where the C library may be used: the program's start, the thread that unpacks.)
 static void room_said(const char *when) {

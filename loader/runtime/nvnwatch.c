@@ -10,6 +10,7 @@
 #include <switch.h>
 
 #include "nx2.h"
+#include "spinlock.h"
 void nx2_log(const char *fmt, ...);
 
 typedef u64 (*Fn4)(u64, u64, u64, u64);
@@ -82,7 +83,11 @@ static u64 called(u32 k, u64 a, u64 b, u64 c, u64 d) {
     __asm__("mrs %0, tpidrro_el0" : "=r"(me));
     if (nx2_nvnlock && __atomic_load_n(&owner, __ATOMIC_ACQUIRE) != me) {
         u64 none = 0;
-        while (!__atomic_compare_exchange_n(&owner, &none, me, 0, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) none = 0, svcSleepThread(0);
+        u32 spins = 0;
+        while (!__atomic_compare_exchange_n(&owner, &none, me, 0, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
+            none = 0;
+            nx2_spin_backoff(&spins);
+        }
     }
     if (nx2_nvnlock) depth++;
     const u64 r = watched[k].real(a, b, c, d);

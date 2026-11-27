@@ -12,6 +12,7 @@
 #include <switch.h>
 
 #include "nx2.h"
+#include "spinlock.h"
 
 #ifndef NX2_NAME
 #define NX2_NAME "game"
@@ -141,7 +142,7 @@ static u32 rom_read(Image *im, u64 offset, u8 *to, u64 size, u64 *got) {
         u32 rc = 0;
         if (nx2_bounce) {
             if (take > sizeof bounce) take = sizeof bounce;
-            while (__atomic_exchange_n(&bounce_lock, 1, __ATOMIC_ACQUIRE)) svcSleepThread(0);
+            nx2_spin_lock(&bounce_lock);
             rc = fsFileRead(&im->part[part], (s64)in, bounce, take, FsReadOption_None, &n);
             for (u64 k = 0; k < n; k++) to[k] = bounce[k];
             __atomic_store_n(&bounce_lock, 0, __ATOMIC_RELEASE);
@@ -354,7 +355,7 @@ static u32 mods_file_read(u32 which, u64 offset, u8 *to, u64 size, u64 *got) {
     static char path[FS_MAX_PATH];
     u32 rc = 0;
     *got = 0;
-    while (__atomic_exchange_n(&mods.lock, 1, __ATOMIC_ACQUIRE)) svcSleepThread(0);
+    nx2_spin_lock(&mods.lock);
     int slot = -1, oldest = -1;
     for (int k = 0; k < MODS_OPEN; k++)
         if (mods.kept[k].open && mods.kept[k].which == which) slot = k;
@@ -633,7 +634,7 @@ static u32 lent_lock;
 static FsFileSystem *host_fs;  // the host's card file system, when its session is a domain
 
 static u32 lend(u32 real, u32 fs) {
-    while (__atomic_exchange_n(&lent_lock, 1, __ATOMIC_ACQUIRE)) svcSleepThread(0);
+    nx2_spin_lock(&lent_lock);
     u32 id = 0;
     for (u32 k = 0; k < LENT && !id; k++)
         if (!lent[k].real) lent[k].real = real, lent[k].fs = fs, id = LENT_OBJECT + k;
