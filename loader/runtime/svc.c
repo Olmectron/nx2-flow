@@ -6,6 +6,7 @@
 #include <switch.h>
 
 #include "nx2.h"
+#include "preselected.h"
 #include "bcat_offline.h"
 
 static Nx2BcatState bcat_state;
@@ -237,6 +238,7 @@ static void applet_named(u32 sdk_handle) {
     if (!serviceIsActive(p) || !p->object_id) return;
     applet_host = p->session, applet_proxy = p->object_id, applet_sdk = sdk_handle;
     applet_funcs = 0, applet_asked = 0, applet_asked_cmd = 0;
+    nx2_preselected_reset(0);
     nx2_log("[applet] the SDK's applet session (%x) goes to the host library's (%x, proxy object %u)\n", (u64)sdk_handle, (u64)applet_host,
             (u64)applet_proxy);
 }
@@ -671,6 +673,20 @@ static void send_sync(u64 *r, const char *module, u64 off, int log) {
         r[0] = 0;
         return;
     }
+    const int is_applet = who[0] == 'a' && who[1] == 'p' && who[2] == 'p' && who[3] == 'l' && who[4] == 'e' && who[5] == 't';
+    int presel_inflight = NX2_PRESEL_INFLIGHT_NONE;
+    if (is_applet) {
+#ifdef __SWITCH2__
+        const u32 proxy = applet_sdk && (u32)r[0] == applet_sdk ? applet_proxy : 0;
+#else
+        const u32 proxy = 0;
+#endif
+        if (nx2_preselected_before(m, proxy, &presel_inflight)) {
+            if (log) nx2_log("[ipc] %s type %u command %d: answered here (preselected user), from %s+%x\n", who, (u64)type, (s64)(s32)cmd, module, off);
+            r[0] = 0;
+            return;
+        }
+    }
 #ifdef __SWITCH2__
     // The SDK asks sm: for audout:u, which a Switch 2 refuses this program: it is given a new session of the audio output manager
     // main.c opened through aud:u instead (the same object). The request sent is "clone this session", to that manager; its answer
@@ -727,6 +743,16 @@ static void send_sync(u64 *r, const char *module, u64 off, int log) {
     }
 #endif
     if ((save == 1 || save == 5) && !rc) nx2_save_after(m, save);
+    if (is_applet && !rc && presel_inflight) {
+        const u32 prev_af = nx2_preselected_app_funcs();
+        const u32 synth = nx2_preselected_after(m, presel_inflight);
+        if (presel_inflight == NX2_PRESEL_INFLIGHT_GET_APP_FUNCS) {
+            const u32 cur_af = nx2_preselected_app_funcs();
+            if (cur_af && cur_af != prev_af) nx2_log("[applet] application functions is object %u\n", (u64)cur_af);
+        } else if (synth) {
+            nx2_log("[applet] PopLaunchParameter(PreselectedUser) returned 0x480: synthesized virtual IStorage object %x\n", (u64)synth);
+        }
+    }
 #ifdef __SWITCH2__
     // (the answer to "clone this session", for an SDK that asked in the newer form: the result where that form has it, after the handle)
     if (tipc && h != (u32)r[0] && !rc) {
