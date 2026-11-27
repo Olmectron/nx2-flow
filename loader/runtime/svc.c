@@ -6,6 +6,7 @@
 #include <switch.h>
 
 #include "nx2.h"
+#include "spinlock.h"
 #include "preselected.h"
 #include "bcat_offline.h"
 
@@ -104,9 +105,9 @@ static int budget = 1500;
 void nx2_svc_verbose(int on) { verbose = on; }
 
 static void sessions_take(void) {
-    while (__atomic_exchange_n(&session_lock, 1, __ATOMIC_ACQUIRE)) svcSleepThread(0);
+    nx2_spin_lock(&session_lock);
 }
-static void sessions_give(void) { __atomic_store_n(&session_lock, 0, __ATOMIC_RELEASE); }
+static void sessions_give(void) { nx2_spin_unlock(&session_lock); }
 static const char *session_name(u32 h) {
     for (u32 k = 0; h && k < SESSIONS; k++)
         if (sessions[k].handle == h) return sessions[k].name;

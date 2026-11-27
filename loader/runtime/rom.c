@@ -13,6 +13,7 @@
 
 #include "nx2.h"
 #include "fs_raw.h"
+#include "spinlock.h"
 
 #ifndef NX2_NAME
 #define NX2_NAME "game"
@@ -697,7 +698,7 @@ static int str_eq(const char *a, const char *b) {
 }
 
 static u32 lend_fs(u32 real, u32 fs, int ro, const char *cross_root) {
-    while (__atomic_exchange_n(&lent_lock, 1, __ATOMIC_ACQUIRE)) svcSleepThread(0);
+    nx2_spin_lock(&lent_lock);
     u8 root_id = 0;
     if (cross_root) {
         int found = -1;
@@ -733,7 +734,7 @@ static u32 lend_fs(u32 real, u32 fs, int ro, const char *cross_root) {
 static u32 lend(u32 real, u32 fs) { return lend_fs(real, fs, 0, NULL); }
 
 static void unlend(u32 k) {
-    while (__atomic_exchange_n(&lent_lock, 1, __ATOMIC_ACQUIRE)) svcSleepThread(0);
+    nx2_spin_lock(&lent_lock);
     if (lent[k].root && lent[k].root <= CROSS_ROOTS && cross_roots[lent[k].root - 1].refs) cross_roots[lent[k].root - 1].refs--;
     lent[k].real = 0, lent[k].fs = 0, lent[k].ro = 0, lent[k].root = 0;
     __atomic_store_n(&lent_lock, 0, __ATOMIC_RELEASE);
