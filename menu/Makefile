@@ -19,7 +19,7 @@ endif
 TARGET   := nx2-flow
 VERSION  := 0.2.5
 OUT      := out
-SOURCES  := app covers diagnostics images library nup transfer main_switch
+SOURCES  := app covers diagnostics images library nup transfer nup_health main_switch
 # The rules for a NUP file kept in parts are the game loader's own header: one place for both.
 PARTS    := ../loader/runtime
 HEADERS  := $(wildcard source/*.h) $(PARTS)/nupparts.h $(PARTS)/nup_title.h
@@ -41,7 +41,7 @@ OBJECTS  := $(foreach s,$(SOURCES),$(OUT)/$(s).o)
 HOSTCXX  ?= g++
 PYTHON   ?= python
 
-.PHONY: all clean preview nettest partstest nacptest copytest diagtest font
+.PHONY: all clean preview nettest partstest nacptest copytest diagtest healthtest font
 all: $(OUT)/$(TARGET).nro
 
 $(OUT):
@@ -59,7 +59,7 @@ $(OUT)/$(TARGET).nacp: | $(OUT)
 $(OUT)/$(TARGET).nro: $(OUT)/$(TARGET).elf $(OUT)/$(TARGET).nacp icon.jpg
 	$(TOOLS)/elf2nro $< $@ --nacp=$(OUT)/$(TARGET).nacp --icon=icon.jpg
 
-PREVIEW_SOURCES := preview/main.cpp source/app.cpp source/covers.cpp source/diagnostics.cpp source/images.cpp source/library.cpp source/nup.cpp
+PREVIEW_SOURCES := preview/main.cpp source/app.cpp source/covers.cpp source/diagnostics.cpp source/images.cpp source/library.cpp source/nup.cpp source/nup_health.cpp
 
 $(OUT)/preview/preview$(EXE): $(PREVIEW_SOURCES) $(HEADERS)
 	mkdir -p $(OUT)/preview
@@ -95,6 +95,11 @@ copytest:
 diagtest:
 	mkdir -p $(OUT)/preview
 	$(HOSTCXX) -std=gnu++20 -O2 -Wall -Wextra -Isource preview/diagnostics_test.cpp source/diagnostics.cpp -o $(OUT)/preview/diagnostics_test$(EXE)
+
+# Pre-launch NUP health inspection tests, on a PC.
+healthtest:
+	mkdir -p $(OUT)/preview
+	$(HOSTCXX) -std=gnu++20 -O2 -Wall -Wextra -Isource preview/health_test.cpp source/nup_health.cpp -o $(OUT)/preview/health_test$(EXE)
 
 font:
 	$(PYTHON) tools/bake_font.py

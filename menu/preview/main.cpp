@@ -14,7 +14,10 @@
 // a sender: transfer_test.cpp.
 
 #include <cstdio>
+#include <cstring>
+#include <filesystem>
 #include <string>
+#include <vector>
 
 #include "app.h"
 #include "platform.h"
@@ -364,5 +367,97 @@ int main(int argc, char** argv) {
     diag.Shot("47-crash-viewer");
     diag.Press(Key('x'), 30); // switch to log.txt
     diag.Shot("48-log-viewer");
+
+    // container health check: healthy game (via X on the game sheet)
+    Flow::SetCardRoot(argv[1]);
+    run.Press(Key('y'));
+    run.Press(Key('x'), 30);
+    run.Shot("46-health-ok");
+    run.Press(Key('b'));
+    run.Press(Key('b'));
+
+    // container health check: oversized zstd warning + pre-launch confirmation dialog
+    const std::string warn_card = std::string{argv[1]} + "/health_warn";
+    std::error_code ec;
+    std::filesystem::create_directories(warn_card + "/nx2-flow/games", ec);
+    std::filesystem::create_directories(warn_card + "/switch/nx2-flow", ec);
+    Flow::SetCardRoot(warn_card);
+    if (std::FILE* f = std::fopen(Flow::OnCard("/switch/nx2-flow/nx2-game.nro").c_str(), "wb")) {
+        std::fputs("preview stub\n", f);
+        std::fclose(f);
+    }
+    // Minimal NUP with a 320 MiB Zstandard entry ("Data/World.pack") to preview the warning UI.
+    {
+        auto wr32 = [](std::vector<unsigned char>& b, std::size_t o, std::uint32_t v) {
+            for (int i = 0; i < 4; ++i) b[o + i] = static_cast<unsigned char>((v >> (8 * i)) & 0xFF);
+        };
+        auto wr64 = [](std::vector<unsigned char>& b, std::size_t o, std::uint64_t v) {
+            for (int i = 0; i < 8; ++i) b[o + i] = static_cast<unsigned char>((v >> (8 * i)) & 0xFF);
+        };
+        const std::string fname = "Data/World.pack";
+        const std::string title = "Big Pack Adventure";
+        const std::string pub = "Preview Studio";
+        const std::string ver = "1.0.0";
+        std::vector<unsigned char> meta;
+        auto add_fact = [&](std::uint16_t k, const std::string& v) {
+            const std::size_t at = meta.size();
+            meta.resize(at + 8 + v.size(), 0);
+            meta[at] = static_cast<unsigned char>(k & 0xFF);
+            meta[at + 1] = static_cast<unsigned char>(k >> 8);
+            wr32(meta, at + 4, static_cast<std::uint32_t>(v.size()));
+            std::memcpy(meta.data() + at + 8, v.data(), v.size());
+        };
+        add_fact(1, std::string{"META"} + std::string(0x7C, '\0'));
+        add_fact(4, ver);
+        add_fact(5, title);
+        add_fact(6, pub);
+
+        const std::uint64_t pool_at = 0x30 + 0x40 + 0x18 + 0x50;
+        const std::uint64_t toc_size = pool_at + fname.size();
+        const std::uint64_t meta_at = 0x80 + toc_size;
+        const std::uint64_t file_at = meta_at + meta.size();
+        const std::uint64_t kept = 4096;
+        std::vector<unsigned char> nup(static_cast<std::size_t>(file_at + kept), 0);
+        std::memcpy(nup.data(), "NUP\x01", 4);
+        wr64(nup, 0x08, 0x80);
+        wr64(nup, 0x10, toc_size);
+        wr64(nup, 0x38, file_at + kept);
+        wr32(nup, 0x48, 1);
+        std::memcpy(nup.data() + 0x80, "TOC\x01", 4);
+        wr32(nup, 0x80 + 0x04, 1);
+        wr64(nup, 0x80 + 0x08, 1);
+        wr64(nup, 0x80 + 0x10, 1);
+        wr64(nup, 0x80 + 0x18, pool_at);
+        wr64(nup, 0x80 + 0x20, fname.size());
+        const std::size_t pkg = 0x80 + 0x30;
+        wr64(nup, pkg + 0x00, 0x0400F00000009000ull);
+        wr32(nup, pkg + 0x0C, 0);
+        wr64(nup, pkg + 0x20, meta_at);
+        wr32(nup, pkg + 0x28, static_cast<std::uint32_t>(meta.size()));
+        const std::size_t fe = 0x80 + 0x30 + 0x40 + 0x18;
+        wr32(nup, fe + 0x00, 0);
+        wr32(nup, fe + 0x04, static_cast<std::uint32_t>(fname.size()));
+        wr64(nup, fe + 0x08, 320ull << 20);
+        wr64(nup, fe + 0x10, file_at);
+        wr64(nup, fe + 0x18, kept);
+        nup[fe + 0x40] = 1; // zstd
+        std::memcpy(nup.data() + 0x80 + pool_at, fname.data(), fname.size());
+        std::memcpy(nup.data() + meta_at, meta.data(), meta.size());
+        if (std::FILE* f = std::fopen(Flow::OnCard("/nx2-flow/games/Big Pack Adventure.nup").c_str(), "wb")) {
+            std::fwrite(nup.data(), 1, nup.size(), f);
+            std::fclose(f);
+        }
+    }
+    Run warn;
+    warn.out = argv[2];
+    warn.app.Start();
+    warn.Press({}, 30);
+    warn.Press(Key('y'));
+    warn.Press(Key('x'), 30);
+    warn.Shot("47-health-zstd-warning");
+    warn.Press(Key('b'));
+    warn.Press(Key('b'));
+    warn.Press(Key('a'), 30);
+    warn.Shot("48-launch-warning");
     return 0;
 }

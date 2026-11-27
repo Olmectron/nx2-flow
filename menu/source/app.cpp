@@ -148,6 +148,15 @@ std::vector<std::string> WrapLogLines(Font& font, const std::vector<std::string>
     return out;
 }
 
+std::vector<Nup::Part> NupPartsOf(const Game& game) {
+    std::vector<Nup::Part> out;
+    out.reserve(game.parts.size());
+    for (const Game::Part& part : game.parts) {
+        out.push_back({OnCard(part.path), part.size});
+    }
+    return out;
+}
+
 } // namespace
 
 // ---------------------------------------------------------------------------------------------
@@ -273,9 +282,12 @@ Request App::Update(const Input& in, float dt) {
         FinishCopy(); // (the frame that says "copying" has been shown)
         return {};
     }
-    if (ask != Ask::None) {
-        UpdateAsk(in);
+    if (health_pending) {
+        FinishHealthCheck(); // (the frame that says "checking" has been shown)
         return {};
+    }
+    if (ask != Ask::None) {
+        return UpdateAsk(in);
     }
     switch (mode) {
     case Mode::Shelf:
@@ -301,8 +313,24 @@ Request App::Update(const Input& in, float dt) {
     case Mode::LogViewer:
         UpdateLogViewer(in);
         break;
+    case Mode::Health:
+        UpdateHealth(in);
+        break;
     }
     return {};
+}
+
+Request App::BuildLaunchRequest(const Game& game) const {
+    // The room the loader keeps is the one setting it must be told as an argument: it
+    // needs it before it can read a file.
+    std::string room;
+    if (!game.id.empty()) {
+        const int mb = Number(Value(ReadSettings(game.Folder() + "/game.cfg"), "room"), 0);
+        if (mb >= kRoomLow && mb <= kRoomHigh) {
+            room = std::to_string(mb);
+        }
+    }
+    return {Request::Kind::Launch, game.path, room};
 }
 
 Request App::UpdateShelf(const Input& in) {
@@ -350,17 +378,20 @@ Request App::UpdateShelf(const Input& in) {
         } else if (!Exists(kGameNro)) {
             Notice(std::string{"The game loader isn't on the card: "} + kGameNro, true);
         } else {
-            Finish();
-            // The room the loader keeps is the one setting it must be told as an argument: it
-            // needs it before it can read a file.
-            std::string room;
-            if (!game.id.empty()) {
-                const int mb = Number(Value(ReadSettings(game.Folder() + "/game.cfg"), "room"), 0);
-                if (mb >= kRoomLow && mb <= kRoomHigh) {
-                    room = std::to_string(mb);
-                }
+            const Nup::HealthReport report = Nup::CheckHealth(NupPartsOf(game));
+            Request req = BuildLaunchRequest(game);
+            if (report.status == Nup::HealthStatus::Ok) {
+                Finish();
+                return req;
             }
-            return {Request::Kind::Launch, game.path, room};
+            pending_launch = std::move(req);
+            const std::string title =
+                report.status == Nup::HealthStatus::Error ? "This NUP file looks incomplete" : report.summary;
+            std::string body = !report.issues.empty() ? report.issues.front() : report.summary;
+            if (!report.advice.empty()) {
+                body += " " + report.advice;
+            }
+            PutQuestion(Ask::LaunchWarning, title, body, "Launch anyway", "Back", true);
         }
     }
     return {};
@@ -375,13 +406,14 @@ void App::PutQuestion(Ask what, std::string title, std::string text, std::string
     ask_warning = warning;
 }
 
-void App::UpdateAsk(const Input& in) {
+Request App::UpdateAsk(const Input& in) {
     if (in.b) {
         ask = Ask::None;
-        return;
+        pending_launch = {};
+        return {};
     }
     if (!in.a) {
-        return;
+        return {};
     }
     const Ask what = ask;
     ask = Ask::None;
@@ -416,9 +448,19 @@ void App::UpdateAsk(const Input& in) {
     case Ask::LeaveTransfer:
         LeaveTransfer();
         break;
+    case Ask::LaunchWarning: {
+        Request req = std::move(pending_launch);
+        pending_launch = {};
+        if (req.kind == Request::Kind::Launch) {
+            Finish();
+            return req;
+        }
+        break;
+    }
     case Ask::None:
         break;
     }
+    return {};
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -574,6 +616,34 @@ void App::UpdateSheet(const Input& in) {
     }
     if (in.a) {
         ChangeSheet(sheet_cursor, 1, true);
+    }
+    if (in.x) {
+        BeginHealthCheck();
+    }
+}
+
+void App::BeginHealthCheck() {
+    if (!Selected()) {
+        return;
+    }
+    health_pending = true;
+    busy = "Checking the NUP file...";
+}
+
+void App::FinishHealthCheck() {
+    health_pending = false;
+    busy.clear();
+    const Game* game = Selected();
+    if (!game) {
+        return;
+    }
+    health_report = Nup::CheckHealth(NupPartsOf(*game));
+    mode = Mode::Health;
+}
+
+void App::UpdateHealth(const Input& in) {
+    if (in.b || in.y) {
+        mode = Mode::Sheet;
     }
 }
 
@@ -1104,6 +1174,9 @@ void App::Draw(Canvas& c) {
         case Mode::LogViewer:
             DrawLogViewer(c);
             break;
+        case Mode::Health:
+            DrawHealth(c);
+            break;
         default:
             break;
         }
@@ -1461,7 +1534,119 @@ void App::DrawSheet(Canvas& c) {
         fy += 22;
     }
     const bool opens = sheet_cursor == kSheetSaves || sheet_cursor == kSheetAdvanced || sheet_cursor == kSheetViewLog;
-    DrawHints(c, {opens ? std::pair{"A", "Open"} : std::pair{"< >", "Change"}, {"B", "Back"}});
+    DrawHints(c, {opens ? std::pair{"A", "Open"} : std::pair{"< >", "Change"}, {"X", "Check file"}, {"B", "Back"}});
+}
+
+void App::DrawHealth(Canvas& c) {
+    const Game* game = Selected();
+    if (!game) {
+        return;
+    }
+    Dim(c);
+    const int W = c.Width();
+    const int w = 860, x = (W - w) / 2, y = 40, h = 590;
+    c.FillRoundRect(x, y, w, h, 16, kColBg);
+    DrawGameHead(c, x, y, w, *game, "Container check");
+
+    int top = y + 96 + 18;
+    const Nup::HealthReport& r = health_report;
+    if (r.status == Nup::HealthStatus::Ok) {
+        c.FillRoundRect(x + 28, top, w - 56, 66, 10, kColSurface);
+        DrawIcon(c, Icon::Check, x + 56.0f, top + 33.0f, 26.0f, kColAccent);
+        font.Draw(c, x + 84, top + 30, r.summary, 19, kColText);
+        font.Draw(c, x + 84, top + 53, "All referenced tables and file data are present on the card.", 15, kColTextDim);
+        top += 66 + 18;
+    } else {
+        const std::string banner_text = !r.issues.empty() ? r.issues.front() : r.advice;
+        top += DrawBanner(c, font, x + 28, top, w - 56, r.summary, banner_text) + 18;
+    }
+
+    // Structured container facts.
+    std::vector<std::pair<const char*, std::string>> facts;
+    std::string container_val = Nup::FormatBytes(r.total_size);
+    if (r.parts > 1) {
+        container_val += " in " + std::to_string(r.parts) + " parts";
+        if (r.mismatched_part > 0) {
+            container_val += " (part " + std::to_string(r.mismatched_part) + " size differs)";
+        }
+    } else if (r.parts == 1) {
+        container_val += " (single file)";
+    }
+    facts.push_back({"Container", container_val});
+
+    if (r.packages > 0) {
+        facts.push_back({"Contents", Count(r.packages, "package", "packages") + ", " +
+                                         Count(static_cast<std::size_t>(r.dirs), "folder", "folders") + ", " +
+                                         Count(static_cast<std::size_t>(r.files), "file", "files")});
+    }
+
+    if (r.furthest_data > 0) {
+        std::string reach = Nup::FormatBytes(r.furthest_data) + " of " + Nup::FormatBytes(r.total_size);
+        reach += r.missing_bytes > 0 ? "   (" + Nup::FormatBytes(r.missing_bytes) + " missing)" : "   (complete)";
+        facts.push_back({"Data reach", reach});
+    }
+
+    if (r.packages > 0) {
+        std::string comp;
+        if (r.files == 0) {
+            comp = "No file entries";
+        } else if (r.zstd_files == 0 && r.unknown_codec_files == 0) {
+            comp = "None (" + Count(static_cast<std::size_t>(r.raw_files), "file", "files") + " stored)";
+        } else {
+            comp = Count(static_cast<std::size_t>(r.zstd_files), "Zstd file", "Zstd files") + " (" +
+                   Nup::FormatBytes(r.zstd_packed_bytes) + " -> " + Nup::FormatBytes(r.zstd_unpacked_bytes) + ")";
+            if (r.raw_files > 0) {
+                comp += ", " + std::to_string(r.raw_files) + " stored";
+            }
+        }
+        facts.push_back({"Compression", comp});
+    }
+
+    if (r.zstd_files > 0) {
+        std::string largest = Nup::FormatBytes(r.largest_zstd_unpacked) + " unpacked (" +
+                              Nup::FormatBytes(r.largest_zstd_packed) + " packed)";
+        if (!r.largest_zstd_name.empty()) {
+            largest += "   " + r.largest_zstd_name;
+        }
+        facts.push_back({"Largest Zstd", largest});
+    }
+
+    for (const auto& [label, value] : facts) {
+        font.Draw(c, x + 34, top + 16, label, 16, kColTextDim);
+        font.Draw(c, x + 34 + 140, top + 16, font.Truncate(value, 16, w - 68 - 140), 16, kColText);
+        top += 28;
+    }
+
+    // Extra issues and actionable advice, clipped cleanly above the card footer.
+    const int footer_limit = y + h - 46;
+    if (!r.advice.empty() || r.issues.size() > 1) {
+        top += 10;
+        if (top + 24 < footer_limit) {
+            c.FillRect(x + 28, top, w - 56, 1, kColLine);
+            top += 24;
+            for (std::size_t k = 1; k < r.issues.size() && top < footer_limit; ++k) {
+                for (const std::string& line : WrapLines(font, "- " + r.issues[k], 16, w - 68)) {
+                    if (top >= footer_limit) {
+                        break;
+                    }
+                    font.Draw(c, x + 34, top, line, 16, kColWarnText);
+                    top += 21;
+                }
+            }
+            if (!r.advice.empty() && top < footer_limit) {
+                for (const std::string& line : WrapLines(font, r.advice, 16, w - 68)) {
+                    if (top >= footer_limit) {
+                        break;
+                    }
+                    font.Draw(c, x + 34, top, line, 16, kColTextDim);
+                    top += 21;
+                }
+            }
+        }
+    }
+
+    font.Draw(c, x + 34, y + h - 22, font.TruncateFront(game->path, 16, w - 68), 16, kColTextDim);
+    DrawHints(c, {{"B", "Back"}});
 }
 
 void App::DrawAdvanced(Canvas& c) {
