@@ -1302,17 +1302,17 @@ u64 nx2_game_room_end(void) {
     u64 cache = 4u << 20;
     if (packed) {
         if (nx2_game_apart_mb >= 1024) {
-            // A game that maps 1 GB+ of physical memory as it runs needs spare MB returned to the kernel, while keeping enough
-            // unpack room (144 MB floor instead of the 192 MB default) to avoid zstd cache thrashing on multi-thousand-file NUPs.
+            // A game that maps 1 GB+ of physical memory as it runs needs spare MB returned to the kernel, while keeping
+            // max(largest + 16 MB, 48 MB) of unpack room (unpack_one() LRU-evicts older entries cleanly).
             u64 room = largest + (16u << 20);
-            if (room < (144u << 20)) room = 144u << 20;
+            if (room < (48u << 20)) room = 48u << 20;
             if (room < unpacked_room) unpacked_room = room;
             cache = room;
         } else {
             cache = unpacked_room > largest + (64u << 20) ? unpacked_room : largest + (64u << 20);
         }
         if (cache > all) cache = all;
-        cache += 16u << 20;
+        cache += (nx2_game_apart_mb >= 1024 ? 8u : 16u) << 20;
     }
     // Whole modules' bss (whole.c: nx2_map_modules runs after main.c trims the loader's stretch, so keep room for them here).
     u64 bss_need = 0;

@@ -46,9 +46,9 @@ void __libnx_initheap(void) {
         // (128 MB, where it was 256: what the port takes of its own heap while a game runs is a few MB, and its table of a mods
         // folder's files; the other half is the game's now, which a game that maps memory as it runs was short of)
 #ifdef NX2_LOADER
-        // (In loader mode, large module images, BSS, RomFS tables and unpacked files live in nx2_big_at; 96 MB for mimalloc still
-        // leaves ample room for libounce while returning 32 MB of physical RAM to the game's kernel pool.)
-        u64 host = 96ull << 20;
+        // (In loader mode, large module images, module BSS, RomFS tables and unpacked files all live in nx2_big_at;
+        // 64 MB for mimalloc leaves ~25-35 MB spare for libounce/stdio while returning 64 MB vs upstream 128 MB to the kernel pool.)
+        u64 host = 64ull << 20;
 #else
         u64 host = 128ull << 20;
 #endif
@@ -137,7 +137,7 @@ void __libnx_initheap(void) {
 #ifdef NX2_LOADER
     // (The game loader's room is not the allocator's to give: a game's modules and its unpacked files are large pieces, which
     // the library's allocator serves badly. The top of the host's part, as much as the room is, is game.c's own to give out.)
-    if (loader_room && size > loader_room + (64ull << 20)) {
+    if (loader_room && size >= loader_room + (64ull << 20)) {
         nx2_big_size = loader_room & ~0xFFFull;
         nx2_big_at = (u8 *)(((u64)addr + size - nx2_big_size) & ~0xFFFull);
         size = (u64)(nx2_big_at - addr);
