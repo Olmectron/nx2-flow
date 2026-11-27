@@ -38,6 +38,9 @@ const char *nx2_home(void);            // "/nx2-flow/<title id>", as the file sy
 const char *nx2_file(const char *name);  // "sdmc:/nx2-flow/<title id>/<name>": good until eight more have been asked for
 #define NX2_F(name) nx2_file(name)
 extern u32 nx2_game_mb, nx2_game_room_mb, nx2_game_apart_mb, nx2_game_remote_mb, nx2_game_sysres_kb;
+extern s64 nx2_game_save_data_size, nx2_game_save_journal_size;
+int nx2_nup_meta_first_fact(const u8 *meta, u64 meta_size);
+int nx2_nup_meta_save_sizes(const u8 *meta, u64 meta_size, int first_fact, s64 *out_data, s64 *out_journal);
 int nx2_game_open(const char *nup_path);  // 0: the game's NUP file was read and its modules are in memory
 extern u8 *nx2_big_at;                    // the stretch of the program's memory kept for the loader's large pieces (game.c)
 extern u64 nx2_big_size;
@@ -143,6 +146,8 @@ int nx2_aoc_ipc(u8 *message);  // a message to the add-on content service: 1 if 
 void nx2_save_open(void);      // the game's saved data: a folder of the card (<folder>/save)
 int nx2_has_sd_save_fs(void);
 u32 nx2_create_cache_storage(s32 index, s64 data_size, s64 journal_size);
+u32 nx2_extend_save_data(const void *uid, s64 data_size, s64 journal_size);
+u32 nx2_get_save_data_size(s64 *out_data, s64 *out_journal, const void *uid, u32 (*real)(s64 *, s64 *, const void *));
 int nx2_save_before(u8 *message, char (*paths)[0x301], u32 *handle);
 void nx2_save_after(u8 *message, int how);
 
