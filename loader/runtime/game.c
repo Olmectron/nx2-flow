@@ -1162,26 +1162,32 @@ static void byml_scan_heaps(const u8 *b, u64 size, u64 map, u64 *vam_kb, u64 *fi
     }
 }
 static void heaps_read(void) {
-    // the table: of those in System/HeapSize, the Switch 2's own ("Ounce" in its name), and of those the game's as sold ("Product")
-    const Rom *r = &roms[0];
-    u32 slot;
-    const u32 system = child_find(r, 0, (const u8 *)"System", 6, 1, &slot);
-    const u32 folder = system == NONE ? NONE : child_find(r, system, (const u8 *)"HeapSize", 8, 1, &slot);
+    // the table: of those in System/HeapSize (across the game's RomFS and any add-on content such as a Switch 2 Edition
+    // upgrade pack), the Switch 2's own ("Ounce" in its name), and of those the game's as sold ("Product")
+    const Rom *best_rom = NULL;
     const Ent *table = NULL;
     int best = -1;
-    for (u32 f = folder == NONE ? NONE : r->dirs[folder].first_file; f != NONE; f = r->files[f].next) {
-        const Ent *e = &r->files[f];
-        char name[160] = {0};
-        memcpy(name, e->name, e->name_len < sizeof name - 1 ? e->name_len : sizeof name - 1);
-        if (!strstr(name, ".HeapDef.byml")) continue;
-        const int score = (strstr(name, "Ounce") ? 2 : 0) + (strstr(name, "Product") ? 1 : 0);
-        if (score > best) best = score, table = e;
+    for (u32 ri = 0; ri < rom_count; ri++) {
+        const Rom *r = &roms[ri];
+        if (!r->dirs || !r->slots) continue;
+        u32 slot;
+        const u32 system = child_find(r, 0, (const u8 *)"System", 6, 1, &slot);
+        const u32 folder = system == NONE ? NONE : child_find(r, system, (const u8 *)"HeapSize", 8, 1, &slot);
+        for (u32 f = folder == NONE ? NONE : r->dirs[folder].first_file; f != NONE; f = r->files[f].next) {
+            const Ent *e = &r->files[f];
+            char name[160] = {0};
+            memcpy(name, e->name, e->name_len < sizeof name - 1 ? e->name_len : sizeof name - 1);
+            if (!strstr(name, ".HeapDef.byml")) continue;
+            const int score = (strstr(name, "Ounce") ? 2 : 0) + (strstr(name, "Product") ? 1 : 0);
+            if (score > best) best = score, table = e, best_rom = r;
+        }
     }
     if (!table) return;
     u8 *raw = rom_whole(table), *byml = NULL;
     u64 size = table->size;
     if (raw && size >= 4 && r32(raw) == 0xFD2FB528u) {  // (packed: with one of the game's dictionaries, or with none)
-        const Ent *pack = rom_find(r, "Pack/ZsDic.pack.zs");
+        const Ent *pack = rom_find(best_rom, "Pack/ZsDic.pack.zs");
+        if (!pack && best_rom != &roms[0] && roms[0].dirs && roms[0].slots) pack = rom_find(&roms[0], "Pack/ZsDic.pack.zs");
         u8 *packed = rom_whole(pack), *dicts = NULL;
         u64 dicts_size = 0;
         if (packed) dicts = unpack_with(packed, pack->size, NULL, 0, &dicts_size);
@@ -1522,7 +1528,6 @@ int nx2_game_open(const char *path) {
         }
         nx2_log("[game] add-on content %u (%x): %u files in %u folders, %u MB as one image (its tables: %u KB, made here)\n", (u64)r->index, r->title,
                 (u64)r->nfiles, (u64)r->ndirs, r->size >> 20, r->tables_size >> 10);
-        rom_trim(r);
         rom_count++;
         k = end;
     }
@@ -1537,7 +1542,7 @@ int nx2_game_open(const char *path) {
                             unpacker_up ? "" : " (the thread for it couldn't be started: they can't be read)");
     }
     heaps_read();
-    rom_trim(&roms[0]);
+    for (u32 i = 0; i < rom_count; i++) rom_trim(&roms[i]);
     {  // game.cfg's "save": which of the game's slots of saved data is in use (each a folder of its own; "save" when none is named)
         char slot[64];
         setting("save", slot, sizeof slot);
