@@ -11,7 +11,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__))).replace('\\',
 sys.path.insert(0, f'{ROOT}/tools')
 import build  # noqa: E402
 
-VERSION = '0.1.6'  # nx2-flow's game loader's own (in its crash reports)
+VERSION = '0.1.7'  # nx2-flow's game loader's own (in its crash reports)
 
 # what a port is built with, found by the loader as it starts: variables of the runtime's, in place of numbers
 FOUND = ['-DNX2_LOADER', '-DNX2_GAME_MB=nx2_game_mb', '-DNX2_GAME_ROOM_MB=nx2_game_room_mb', '-DNX2_GAME_APART_MB=nx2_game_apart_mb', '-DNX2_GAME_REMOTE_MB=nx2_game_remote_mb',

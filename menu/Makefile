@@ -17,7 +17,7 @@ $(error "Please set DEVKITPRO in your environment. export DEVKITPRO=<path to>/de
 endif
 
 TARGET   := nx2-flow
-VERSION  := 0.2.5
+VERSION  := 0.2.6
 OUT      := out
 SOURCES  := app covers diagnostics images library nup transfer nup_health main_switch
 # The rules for a NUP file kept in parts are the game loader's own header: one place for both.

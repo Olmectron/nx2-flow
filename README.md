@@ -106,6 +106,11 @@ The menu's Transfer screen takes the file from a computer; `menu/README.md` has 
 - **Mods.** A file put in the game's folder under `mods/`, at the path it has inside the game, is what the game gets in place of
   its own. More sets go in `modsets/<name>/`; the menu picks which is in use.
 - **Slots of saved data.** Each slot is a folder of the game's own saved data; the menu makes, copies and picks them.
+- **Patches of the program.** IPS and IPS32 patches go in the game's folder under `exefs_patches/`, each named by the build
+  id of the module it is for; the game's log has every module's build id.
+- **The menu's own checks.** The top of the screen says which game the homebrew menu was started over and what that host has.
+  A game's options show its last log and its crash report, and X there checks the NUP file: that it is all there, and what
+  it holds. A file that looks broken is said before the game is started.
 - **When a game ends badly**, its folder has `crash.txt`: the file to send with a report.
 
 ## Building
