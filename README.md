@@ -119,6 +119,9 @@ Each folder has its own README. In short: devkitPro (devkitA64), ounce-devkit (l
 
 ## Contributing
 
+New to this? [`docs/help-with-an-ai.md`](docs/help-with-an-ai.md) takes you from an empty card to a good report or pull
+request, step by step, and has a block of instructions to give an AI assistant so that it can guide you.
+
 Pull requests are welcome, for the menu and for the loader alike: both are this repository's own source. What helps one get in:
 
 - Say what it was tried with (the game by its title id, the host, docked or handheld) and attach the lines of `log.txt` or
