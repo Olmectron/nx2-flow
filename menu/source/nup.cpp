@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "nup.h"
+#include "stb_image.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -152,15 +153,10 @@ std::string Text(const std::vector<u8>& v) {
     return std::string{reinterpret_cast<const char*>(v.data()), n};
 }
 
-/// A NACP's own title and publisher (the first language that has one) and display version:
-/// for a container that gives the NACP and not the texts.
-void FromNacp(const std::vector<u8>& nacp, std::string& title, std::string& publisher,
-              std::string& version) {
-    if (nacp.size() < 0x3070) {
-        return;
-    }
-    for (int lang = 0; lang < 16 && title.empty(); ++lang) {
-        const u8* entry = nacp.data() + lang * 0x300;
+void ReadLangEntries(const u8* entries, std::size_t count, std::string& title,
+                     std::string& publisher) {
+    for (std::size_t lang = 0; lang < count && title.empty(); ++lang) {
+        const u8* entry = entries + lang * 0x300;
         const std::size_t tl = strnlen(reinterpret_cast<const char*>(entry), 0x200);
         if (tl != 0) {
             title.assign(reinterpret_cast<const char*>(entry), tl);
@@ -168,13 +164,50 @@ void FromNacp(const std::vector<u8>& nacp, std::string& title, std::string& publ
             publisher.assign(reinterpret_cast<const char*>(entry + 0x200), pl);
         }
     }
+}
+
+} // namespace
+
+/// A NACP's own title and publisher (the first language that has one) and display version:
+/// for a container that gives the NACP and not the texts.
+void FromNacp(const std::vector<u8>& nacp, std::string& title, std::string& publisher,
+              std::string& version) {
+    if (nacp.size() < 0x3070) {
+        return;
+    }
+    constexpr std::size_t kLangEntrySize = 0x300;
+    constexpr std::size_t kFormat0Entries = 16;
+    constexpr std::size_t kFormat1Entries = 32;
+    constexpr std::size_t kMaxCompressedSize = 0x2FFE;
+    constexpr std::size_t kTitlesDataFormatOffset = 0x3215;
+
+    const u8 format = nacp.size() > kTitlesDataFormatOffset ? nacp[kTitlesDataFormatOffset] : 0;
+    if (title.empty()) {
+        if (format == 0) {
+            ReadLangEntries(nacp.data(), kFormat0Entries, title, publisher);
+        } else if (format == 1) {
+            // Horizon OS 21.0.0+ compressed NacpLanguageEntryData: u16 size at 0x0000 followed
+            // by raw DEFLATE (wbits = -15) at 0x0002 expanding to NacpLanguageEntry[32].
+            const u16 compressed_size = Rd16(nacp.data());
+            if (compressed_size > 0 && compressed_size <= kMaxCompressedSize) {
+                std::vector<u8> raw(kFormat1Entries * kLangEntrySize, 0);
+                const int decoded = stbi_zlib_decode_noheader_buffer(
+                    reinterpret_cast<char*>(raw.data()), static_cast<int>(raw.size()),
+                    reinterpret_cast<const char*>(nacp.data() + 2),
+                    static_cast<int>(compressed_size));
+                if (decoded >= static_cast<int>(kLangEntrySize) &&
+                    decoded <= static_cast<int>(raw.size())) {
+                    ReadLangEntries(raw.data(), static_cast<std::size_t>(decoded) / kLangEntrySize,
+                                    title, publisher);
+                }
+            }
+        }
+    }
     if (version.empty()) {
         const std::size_t vl = strnlen(reinterpret_cast<const char*>(nacp.data() + 0x3060), 0x10);
         version.assign(reinterpret_cast<const char*>(nacp.data() + 0x3060), vl);
     }
 }
-
-} // namespace
 
 int Entry(const std::string& dir, const std::string& name, bool is_folder, Found& out) {
     out = Found{};

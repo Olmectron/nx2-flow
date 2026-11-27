@@ -41,7 +41,7 @@ OBJECTS  := $(foreach s,$(SOURCES),$(OUT)/$(s).o)
 HOSTCXX  ?= g++
 PYTHON   ?= python
 
-.PHONY: all clean preview nettest partstest font
+.PHONY: all clean preview nettest partstest nacptest font
 all: $(OUT)/$(TARGET).nro
 
 $(OUT):
@@ -80,6 +80,11 @@ nettest:
 partstest:
 	mkdir -p $(OUT)/preview
 	$(HOSTCXX) -std=gnu++20 -O2 -Wall -Isource -I$(PARTS) preview/parts_test.cpp source/library.cpp source/nup.cpp source/images.cpp -o $(OUT)/preview/parts_test$(EXE)
+
+# Host unit tests for NACP parsing (format 0 uncompressed and FW 21.0.0+ format 1 DEFLATE).
+nacptest:
+	mkdir -p $(OUT)/preview
+	$(HOSTCXX) -std=gnu++20 -O2 -Wall -Isource -I$(PARTS) preview/nacp_test.cpp source/nup.cpp source/images.cpp -o $(OUT)/preview/nacp_test$(EXE)
 
 font:
 	$(PYTHON) tools/bake_font.py
