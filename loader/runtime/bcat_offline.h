@@ -1,13 +1,18 @@
 // Offline BCAT progress stand-in (IDeliveryCacheProgressService).
 //
 // When a game (e.g. NSO Classics apps such as Nintendo GameCube - Nintendo Classics) runs over a donor title whose NACP
-// has no BCAT delivery cache storage, IBcatService::RequestSyncDeliveryCache (cmd 10100/10101/20100/20101) returns a
+// has no BCAT delivery cache storage, app-wide IBcatService::RequestSyncDeliveryCache (cmd 10100/20100) returns a
 // donor-mismatch BCAT error such as 0xC47A (2122-0098, ResultInvalidOperation) and the app displays nn::err::ShowError.
+// Directory-scoped 10101/20101 requests are left pass-through so games that handle synchronous 0xC47A cleanly (such as
+// Nintendo Switch Sports Resort) do not stall waiting on a synthetic progress object.
 //
 // Instead of masking the error with a broken empty reply or fragile C++ symbol hooks, we let the real bcat service run
 // first; only when it fails with a donor-storage/permission error (or on a stood-in bcat session) do we hand back a
-// virtual IDeliveryCacheProgressService whose DeliveryCacheProgressImpl is already Done (status = 9, result = 0, 0 bytes)
-// and whose GetEvent() returns a virtual signaled readable event handle.
+// virtual IDeliveryCacheProgressService whose DeliveryCacheProgressImpl is already Done (status = 9, result = donor
+// BCAT error, 0 bytes) and whose GetEvent() returns a virtual signaled readable event handle.
+// Keeping RequestSyncDeliveryCache's synchronous return at 0 suppresses donor-mismatch error popups (2122-0098) while
+// propagating the real BCAT error into DeliveryCacheProgressImpl::result avoids lying ResultSuccess to games that
+// inspect DeliveryCacheProgress::GetResult() when MountDeliveryCacheStorage still returns 0x147A.
 //
 // Pure C, no libc or <switch.h> dependency: runs safely on game threads (no TLS/libc) and in standalone host unit tests.
 #pragma once
@@ -30,6 +35,7 @@ typedef struct {
     uint32_t is_domain;
     uint32_t event_refs;
     uint32_t event_signaled;
+    uint32_t result;
 } Nx2BcatSlot;
 
 typedef struct {
@@ -62,10 +68,14 @@ static inline void nx2_bcat_wr32(uint8_t *p, uint32_t v) {
 }
 
 static inline void nx2_bcat_lock(Nx2BcatState *st) {
+    uint32_t spins = 0;
     while (__atomic_exchange_n(&st->lock, 1u, __ATOMIC_ACQUIRE)) {
-#if defined(__aarch64__)
+#if defined(__SWITCH__) || defined(__SWITCH2__)
+        svcSleepThread(spins < 16u ? 0 : 100000);
+#elif defined(__aarch64__)
         __asm__ volatile("yield");
 #endif
+        if (spins < 16u) spins++;
     }
 }
 
@@ -86,7 +96,10 @@ static inline int nx2_bcat_is_event_handle(uint32_t h) {
 }
 
 static inline int nx2_bcat_is_sync_cmd(uint32_t cmd) {
-    return cmd == 10100u || cmd == 10101u || cmd == 20100u || cmd == 20101u;
+    /* Only intercept app-wide RequestSyncDeliveryCache (10100 / 20100), which aborts with 2122-0098
+       when the donor lacks BCAT storage. Leave directory-scoped 10101 / 20101 pass-through so games
+       that handle synchronous 0xC47A cleanly (e.g. Switch Sports Resort) do not stall waiting on sync. */
+    return cmd == 10100u || cmd == 20100u;
 }
 
 static inline int nx2_bcat_is_cancel_cmd(uint32_t cmd) {
@@ -103,7 +116,7 @@ static inline int nx2_bcat_is_offline_donor_error(uint32_t result) {
     return result == 0xC47Au || result == 0xB47Au || result == 0xA07Au || result == 0x147Au;
 }
 
-static inline uint32_t nx2_bcat_alloc_slot(Nx2BcatState *st, int is_domain) {
+static inline uint32_t nx2_bcat_alloc_slot(Nx2BcatState *st, int is_domain, uint32_t result) {
     nx2_bcat_lock(st);
     uint32_t chosen = NX2_BCAT_SLOTS;
     for (uint32_t k = 0; k < NX2_BCAT_SLOTS; k++) {
@@ -127,6 +140,7 @@ static inline uint32_t nx2_bcat_alloc_slot(Nx2BcatState *st, int is_domain) {
     st->slots[chosen].is_domain = is_domain ? 1u : 0u;
     st->slots[chosen].event_refs = 0u;
     st->slots[chosen].event_signaled = 1u;
+    st->slots[chosen].result = result;
     nx2_bcat_unlock(st);
     return chosen;
 }
@@ -318,17 +332,21 @@ static inline void nx2_bcat_reply_ok(uint8_t *m, int is_domain) {
     nx2_bcat_write_reply(m, is_domain, 0u, NULL, 0u, 0u, 0u, 0u);
 }
 
-static inline void nx2_bcat_fill_done_impl(uint8_t *dst, uint64_t size) {
+static inline void nx2_bcat_fill_done_impl(uint8_t *dst, uint64_t size, uint32_t result) {
     const uint64_t n = size < NX2_BCAT_IMPL_SIZE ? size : NX2_BCAT_IMPL_SIZE;
     for (uint64_t k = 0; k < n; k++) dst[k] = 0u;
     if (n >= 4u) {
-        /* DeliveryCacheProgressImpl: status = Done (9), result = 0 (ResultSuccess) */
-        dst[0] = (uint8_t)NX2_BCAT_STATUS_DONE;
+        /* DeliveryCacheProgressImpl: offset 0x00 = status (Done = 9), offset 0x04 = Result */
+        nx2_bcat_wr32(dst, NX2_BCAT_STATUS_DONE);
+    }
+    if (n >= 8u) {
+        nx2_bcat_wr32(dst + 4u, result);
     }
 }
 
-static inline int nx2_bcat_synthesize_sync(Nx2BcatState *st, uint8_t *m, const Nx2BcatReq *req, uint32_t *out_id) {
-    const uint32_t idx = nx2_bcat_alloc_slot(st, req->is_domain);
+static inline int nx2_bcat_synthesize_sync(Nx2BcatState *st, uint8_t *m, const Nx2BcatReq *req,
+                                           uint32_t progress_result, uint32_t *out_id) {
+    const uint32_t idx = nx2_bcat_alloc_slot(st, req->is_domain, progress_result);
     if (req->is_domain) {
         const uint32_t obj = NX2_BCAT_PROG_OBJ_BASE + idx;
         nx2_bcat_write_reply(m, 1, 0u, NULL, 0u, obj, 0u, 0u);
@@ -346,7 +364,11 @@ static inline int nx2_bcat_try_copy_from_domain(Nx2BcatState *st, uint8_t *m, co
     if (req->in_raw_off == 0u || req->in_raw_off + 4u > 0x100u) return 0;
     const uint32_t obj_id = nx2_bcat_rd32(m + req->in_raw_off);
     if (!nx2_bcat_is_prog_obj(obj_id)) return 0;
-    const uint32_t idx = nx2_bcat_alloc_slot(st, 0);
+    const uint32_t src_idx = obj_id - NX2_BCAT_PROG_OBJ_BASE;
+    nx2_bcat_lock(st);
+    const uint32_t src_res = st->slots[src_idx].result;
+    nx2_bcat_unlock(st);
+    const uint32_t idx = nx2_bcat_alloc_slot(st, 0, src_res);
     const uint32_t hnd = NX2_BCAT_PROG_HND_BASE + idx;
     nx2_bcat_write_reply(m, 0, 0u, NULL, 0u, 0u, 0u, hnd);
     if (out_handle) *out_handle = hnd;
@@ -387,7 +409,10 @@ static inline int nx2_bcat_handle_progress(Nx2BcatState *st, uint8_t *m, const N
         }
         if (req->has_sfci && (req->cmd == 2u || req->cmd == 4u)) {
             /* CloneCurrentObject / CloneCurrentObjectEx */
-            const uint32_t cloned = nx2_bcat_alloc_slot(st, 0);
+            nx2_bcat_lock(st);
+            const uint32_t src_res = st->slots[idx].result;
+            nx2_bcat_unlock(st);
+            const uint32_t cloned = nx2_bcat_alloc_slot(st, 0, src_res);
             nx2_bcat_write_reply(m, 0, 0u, NULL, 0u, 0u, 0u, NX2_BCAT_PROG_HND_BASE + cloned);
             return 1;
         }
@@ -421,8 +446,11 @@ static inline int nx2_bcat_handle_progress(Nx2BcatState *st, uint8_t *m, const N
         }
         if (req->cmd == 1u) {
             /* IDeliveryCacheProgressService::GetImpl -> OutLargeData<DeliveryCacheProgressImpl, HipcPointer> */
+            nx2_bcat_lock(st);
+            const uint32_t res = st->slots[idx].result;
+            nx2_bcat_unlock(st);
             if (req->out_buf != 0u && req->out_buf_size > 0u) {
-                nx2_bcat_fill_done_impl((uint8_t *)(uintptr_t)req->out_buf, req->out_buf_size);
+                nx2_bcat_fill_done_impl((uint8_t *)(uintptr_t)req->out_buf, req->out_buf_size, res);
             }
             nx2_bcat_write_reply(m, req->is_domain, 0u, NULL, 0u, 0u, 0u, 0u);
             return 1;

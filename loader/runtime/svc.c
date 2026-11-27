@@ -546,8 +546,8 @@ static void send_sync(u64 *r, const char *module, u64 off, int log) {
                     return;
                 }
                 if ((breq.type == 4 || breq.type == 6) && breq.has_sfci && nx2_bcat_is_sync_cmd(breq.cmd)) {
-                    nx2_bcat_synthesize_sync(&bcat_state, m, &breq, &bid);
-                    nx2_log("[bcat] stood-in %s command %u: returning completed offline progress (%s %x)\n", who, (u64)breq.cmd,
+                    nx2_bcat_synthesize_sync(&bcat_state, m, &breq, 0x147Au, &bid);
+                    nx2_log("[bcat] stood-in %s command %u: returning offline progress (%s %x, result 147a)\n", who, (u64)breq.cmd,
                             breq.is_domain ? "object" : "handle", (u64)bid);
                     if (said) bytes_said("answered here", m);
                     r[0] = 0;
@@ -715,9 +715,9 @@ static void send_sync(u64 *r, const char *module, u64 off, int log) {
     if (is_bcat && !rc && bcat_req_ok && (bcat_req.type == 4 || bcat_req.type == 6) && bcat_req.has_sfci) {
         if (nx2_bcat_is_sync_cmd(bcat_req.cmd) && nx2_bcat_is_offline_donor_error(result)) {
             u32 bid = 0;
-            nx2_bcat_synthesize_sync(&bcat_state, m, &bcat_req, &bid);
-            nx2_log("[bcat] %s command %u returned %x (no donor BCAT storage): returning completed offline progress (%s %x)\n", who,
-                    (u64)bcat_req.cmd, (u64)result, bcat_req.is_domain ? "object" : "handle", (u64)bid);
+            nx2_bcat_synthesize_sync(&bcat_state, m, &bcat_req, result, &bid);
+            nx2_log("[bcat] %s command %u returned %x (no donor BCAT storage): returning offline progress (%s %x, result %x)\n", who,
+                    (u64)bcat_req.cmd, (u64)result, bcat_req.is_domain ? "object" : "handle", (u64)bid, (u64)result);
             result = 0, got = 0;
         } else if (nx2_bcat_is_cancel_cmd(bcat_req.cmd) && nx2_bcat_is_offline_donor_error(result)) {
             nx2_bcat_reply_ok(m, bcat_req.is_domain);
