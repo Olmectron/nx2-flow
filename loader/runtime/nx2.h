@@ -38,7 +38,7 @@ extern u64 nx2_game_title_id;          // the title id, as a 64-bit integer
 const char *nx2_home(void);            // "/nx2-flow/<title id>", as the file system service is given it
 const char *nx2_file(const char *name);  // "sdmc:/nx2-flow/<title id>/<name>": good until eight more have been asked for
 #define NX2_F(name) nx2_file(name)
-extern u32 nx2_game_mb, nx2_game_room_mb, nx2_game_apart_mb, nx2_game_remote_mb, nx2_game_sysres_kb;
+extern u32 nx2_game_mb, nx2_game_room_mb, nx2_game_apart_mb, nx2_game_fixed_mb, nx2_game_auto_heaps, nx2_game_remote_mb, nx2_game_sysres_kb;
 extern s64 nx2_game_save_data_size, nx2_game_save_journal_size;
 int nx2_nup_meta_first_fact(const u8 *meta, u64 meta_size);
 int nx2_nup_meta_save_sizes(const u8 *meta, u64 meta_size, int first_fact, s64 *out_data, s64 *out_journal);
