@@ -31,6 +31,7 @@ s64 nx2_zbic_to_zstd(const u8 *data, u64 size, u8 *out, u64 room);  // zbic.c
 #define MODULES 12
 char nx2_game_id[17] = "unknown";
 char nx2_game_display_version[16];
+u64 nx2_game_title_id;
 // (What the game is told of memory, as a port is built: with no figure given and nothing kept apart, what there really is less
 // 400 MB, 8192 at most; the console's 8992 for a game whose table of heaps keeps a stretch apart; game.cfg's figure otherwise.
 // tools/build.py and main.c have the story.)
@@ -1471,6 +1472,7 @@ int nx2_game_open(const char *path) {
         return -1;
     }
     if (!title) title = nup_package(layers[0]).title;
+    nx2_game_title_id = title;
     static const char hex[] = "0123456789abcdef";
     for (int k = 0; k < 16; k++) nx2_game_id[k] = hex[title >> (60 - 4 * k) & 15];
     nx2_game_id[16] = 0;
