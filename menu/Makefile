@@ -22,7 +22,7 @@ OUT      := out
 SOURCES  := app covers images library nup transfer main_switch
 # The rules for a NUP file kept in parts are the game loader's own header: one place for both.
 PARTS    := ../loader/runtime
-HEADERS  := $(wildcard source/*.h) $(PARTS)/nupparts.h
+HEADERS  := $(wildcard source/*.h) $(PARTS)/nupparts.h $(PARTS)/nup_title.h
 
 include $(DEVKITPRO)/libounce/switch2_rules
 ARCH     := $(SWITCH2_CPU) -mtp=soft -fPIE

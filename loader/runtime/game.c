@@ -23,6 +23,7 @@
 #include "nx2.h"
 #include "ips.h"       // (ExeFS .ips / .ips32 binary patches applied to unpacked NSO modules by Build ID)
 #include "nupparts.h"  // (a NUP file kept in parts, for a card that takes no file of 4 GB)
+#include "nup_title.h"
 void nx2_log(const char *fmt, ...);
 void nx2_log_flush(void);
 s64 nx2_zbic_to_zstd(const u8 *data, u64 size, u8 *out, u64 room);  // zbic.c
@@ -1437,7 +1438,8 @@ int nx2_game_open(const char *path) {
     // the packages that make the game: its own, then its updates by their versions; and any add-on content (kind 2) by index and version
     u32 layers[16], count = 0;
     u32 aoc_pkgs[NX2_AOC_MAX * 2], aoc_pkg_count = 0;
-    u64 title = 0;
+    u64 base_title = 0, update_title = 0;
+    u32 update_title_ver = 0;
     for (u32 k = 0; k < nup.npackages; k++) {
         const Package p = nup_package(k);
         if (p.kind <= 1) {
@@ -1449,7 +1451,8 @@ int nx2_game_open(const char *path) {
                 layers[at] = layers[at - 1];
             }
             layers[at] = k;
-            if (!p.kind && !title) title = p.title;
+            if (!p.kind && !base_title && p.title) base_title = p.title;
+            else if (p.kind == 1 && p.title && (!update_title || p.version >= update_title_ver)) update_title = p.title, update_title_ver = p.version;
         } else if (p.kind == 2) {
             const u32 index = (u32)(p.title & 0xFFF);
             if (!index) {
@@ -1471,7 +1474,59 @@ int nx2_game_open(const char *path) {
         nx2_log("[game] no game in that NUP file (its %u packages are of other kinds)\n", (u64)nup.npackages);
         return -1;
     }
-    if (!title) title = nup_package(layers[0]).title;
+
+    // the program: the newest package's that has one
+    s64 code = -1;
+    for (u32 k = 0; k < count; k++) {
+        const Package p = nup_package(layers[k]);
+        if (p.exefs != NONE && nup_find(p.exefs, "main") >= 0) code = k;
+    }
+    if (code < 0) {
+        nx2_log("[game] no program in that NUP file (a package with an exefs folder that has \"main\")\n");
+        return -1;
+    }
+    const Package with_code = nup_package(layers[code]);
+    u64 npdm_pid = 0;
+    int got_npdm = 0;
+    u32 sysres_bytes = 0;
+    {  // what its own description asks of the console (and its ProgramId if the NUP packages have title 0)
+        const s64 npdm = nup_find(with_code.exefs, "main.npdm");
+        u8 head[0x18];
+        int got_head = 0;
+        if (npdm >= 0) {
+            const NupFile f = nup_file((u64)npdm);
+            if (!f.codec && f.size >= sizeof head) {
+                if (!base_title && !update_title && f.size <= (1u << 20)) {
+                    u8 *raw = nx2_big_alloc(f.size, 0);
+                    if (raw && !nup_read(f.at, raw, f.size)) {
+                        memcpy(head, raw, sizeof head), got_head = 1;
+                        npdm_pid = nx2_npdm_program_id(raw, (size_t)f.size);
+                    }
+                    nx2_big_free(raw);
+                } else {
+                    got_head = !nup_read(f.at, head, sizeof head);
+                }
+            } else if (f.codec == 1 && f.size >= sizeof head && f.size <= (1u << 20) && f.kept && f.kept <= (1u << 20)) {
+                // (kept packed, as most are: it was skipped, and the log said every such game "was made for 0 MB". nx2-flow's
+                // pull request 14, by ptichalouf, whose finding and change this is. The figures are only said, in main.c.)
+                u8 *packed = nx2_big_alloc(f.kept, 0), *raw = nx2_big_alloc(f.size, 0);
+                if (packed && raw && !nup_read(f.at, packed, f.kept) && ZSTD_decompress(raw, f.size, packed, f.kept) == f.size) {
+                    memcpy(head, raw, sizeof head), got_head = 1;
+                    if (!base_title && !update_title) npdm_pid = nx2_npdm_program_id(raw, (size_t)f.size);
+                }
+                nx2_big_free(raw), nx2_big_free(packed);
+            }
+        }
+        if (got_head && !memcmp(head, "META", 4)) {
+            got_npdm = 1;
+            sysres_bytes = r32(head + 0x14);
+            nx2_game_remote_mb = r32(head + 0x10) >> 20, nx2_game_sysres_kb = sysres_bytes >> 10;
+            if (nx2_game_remote_mb > 4096) nx2_game_remote_mb = 0;
+            if (nx2_game_sysres_kb > (4096u << 10)) nx2_game_sysres_kb = 0;
+        }
+    }
+
+    const u64 title = nx2_resolve_title_id(base_title, update_title, npdm_pid);
     nx2_game_title_id = title;
     static const char hex[] = "0123456789abcdef";
     for (int k = 0; k < 16; k++) nx2_game_id[k] = hex[title >> (60 - 4 * k) & 15];
@@ -1489,17 +1544,6 @@ int nx2_game_open(const char *path) {
     else
         nx2_log("[game] %s: the game %s, of %u package(s); its folder is sdmc:%s\n", path, nx2_game_id, (u64)count, home);
 
-    // the program: the newest package's that has one
-    s64 code = -1;
-    for (u32 k = 0; k < count; k++) {
-        const Package p = nup_package(layers[k]);
-        if (p.exefs != NONE && nup_find(p.exefs, "main") >= 0) code = k;
-    }
-    if (code < 0) {
-        nx2_log("[game] no program in that NUP file (a package with an exefs folder that has \"main\")\n");
-        return -1;
-    }
-    const Package with_code = nup_package(layers[code]);
     char patches_dir[96] = "";
     {
         char candidate[96];
@@ -1520,33 +1564,6 @@ int nx2_game_open(const char *path) {
         char wish[16];
         setting("modules", wish, sizeof wish);
         if (nx2_merge_plan(wish)) return -1;
-    }
-    int got_npdm = 0;
-    u32 sysres_bytes = 0;
-    {  // what its own description asks of the console, which a program has from the title it is started over (main.c says both)
-        const s64 npdm = nup_find(with_code.exefs, "main.npdm");
-        u8 head[0x18];
-        int got_head = 0;
-        if (npdm >= 0) {
-            const NupFile f = nup_file((u64)npdm);
-            if (!f.codec && f.size >= sizeof head) {
-                got_head = !nup_read(f.at, head, sizeof head);
-            } else if (f.codec == 1 && f.size >= sizeof head && f.size <= (1u << 20) && f.kept && f.kept <= (1u << 20)) {
-                // (kept packed, as most are: it was skipped, and the log said every such game "was made for 0 MB". nx2-flow's
-                // pull request 14, by ptichalouf, whose finding and change this is. The figures are only said, in main.c.)
-                u8 *packed = nx2_big_alloc(f.kept, 0), *raw = nx2_big_alloc(f.size, 0);
-                if (packed && raw && !nup_read(f.at, packed, f.kept) && ZSTD_decompress(raw, f.size, packed, f.kept) == f.size)
-                    memcpy(head, raw, sizeof head), got_head = 1;
-                nx2_big_free(raw), nx2_big_free(packed);
-            }
-        }
-        if (got_head && !memcmp(head, "META", 4)) {
-            got_npdm = 1;
-            sysres_bytes = r32(head + 0x14);
-            nx2_game_remote_mb = r32(head + 0x10) >> 20, nx2_game_sysres_kb = sysres_bytes >> 10;
-            if (nx2_game_remote_mb > 4096) nx2_game_remote_mb = 0;
-            if (nx2_game_sysres_kb > (4096u << 10)) nx2_game_sysres_kb = 0;
-        }
     }
     {  // display version from the newest package's metadata/NACP (for IApplicationFunctions::GetDisplayVersion)
         nx2_game_display_version[0] = 0;
