@@ -39,7 +39,8 @@ static void nx2_preselected_capture(void) {
     }
     if (accountUidIsValid(&uid)) {
         nx2_preselected_set(uid.uid[0], uid.uid[1]);
-        nx2_log("[applet] preselected user captured via %s (%x %x)\n", how, uid.uid[0], uid.uid[1]);
+        // (which user is not said: a log is what a report of a game that doesn't run is sent with, and the number is the user's own)
+        nx2_log("[applet] preselected user captured via %s\n", how);
     } else {
         nx2_log("[applet] no preselected user available on host\n");
     }
@@ -304,7 +305,7 @@ int main(int argc, char **argv) {
 #ifdef NX2_LOADER
             // (A game that declares 1 GB+ of VirtualAddressMemory and has only fixed top-level heaps besides Reserved over-allocates
             // SetHeapSize when told the full 8992 MB while the host takes ~450-550 MB from the kernel pool, starving MapPhysicalMemory
-            // (nx2-relink#28, Switch Sports Resort: 7149 MB fixed + 1500 MB VAM). Trim `most` to max(fixed + 128 MB + apart,
+            // (nx2-relink's issue 28: 7149 MB fixed + 1500 MB VAM). Trim `most` to max(fixed + 128 MB + apart,
             // heap_given - slack) so SetHeapSize keeps >= 128 MB headroom and returns the excess physical memory to MapPhysicalMemory.)
             if (apart >= (1024ull << 20) && nx2_game_fixed_mb && !nx2_game_auto_heaps && heap_given < most) {
                 const u64 min_most = (((u64)nx2_game_fixed_mb + 128) << 20) + apart;

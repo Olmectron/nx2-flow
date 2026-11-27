@@ -1,10 +1,10 @@
 // Offline BCAT progress stand-in (IDeliveryCacheProgressService).
 //
-// When a game (e.g. NSO Classics apps such as Nintendo GameCube - Nintendo Classics) runs over a donor title whose NACP
+// When a game runs over a donor title whose NACP
 // has no BCAT delivery cache storage, app-wide IBcatService::RequestSyncDeliveryCache (cmd 10100/20100) returns a
 // donor-mismatch BCAT error such as 0xC47A (2122-0098, ResultInvalidOperation) and the app displays nn::err::ShowError.
-// Directory-scoped 10101/20101 requests are left pass-through so games that handle synchronous 0xC47A cleanly (such as
-// Nintendo Switch Sports Resort) do not stall waiting on a synthetic progress object.
+// Directory-scoped 10101/20101 requests are left pass-through so games that handle synchronous 0xC47A cleanly do not
+// stall waiting on a synthetic progress object.
 //
 // Instead of masking the error with a broken empty reply or fragile C++ symbol hooks, we let the real bcat service run
 // first; only when it fails with a donor-storage/permission error (or on a stood-in bcat session) do we hand back a
@@ -98,7 +98,7 @@ static inline int nx2_bcat_is_event_handle(uint32_t h) {
 static inline int nx2_bcat_is_sync_cmd(uint32_t cmd) {
     /* Only intercept app-wide RequestSyncDeliveryCache (10100 / 20100), which aborts with 2122-0098
        when the donor lacks BCAT storage. Leave directory-scoped 10101 / 20101 pass-through so games
-       that handle synchronous 0xC47A cleanly (e.g. Switch Sports Resort) do not stall waiting on sync. */
+       that handle synchronous 0xC47A cleanly do not stall waiting on sync. */
     return cmd == 10100u || cmd == 20100u;
 }
 

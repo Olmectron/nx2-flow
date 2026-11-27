@@ -1285,7 +1285,7 @@ static void heaps_read(void) {
         nx2_log("[game] the game's own table of heaps keeps %u MB of address space apart from its heap (%u MB fixed, %u auto): it is told of the console's 8992 MB, as on its console\n",
                 (u64)nx2_game_apart_mb, (u64)nx2_game_fixed_mb, (u64)nx2_game_auto_heaps);
     } else if (fixed_kb >= (5120ull << 10) && fixed_kb < (16ull << 20)) {
-        // (Some Switch 2 games, such as Mario Kart World, reserve address space in code without a VirtualAddressMemory entry in
+        // (Some Switch 2 games reserve address space in code without a VirtualAddressMemory entry in
         // HeapDef.byml while declaring 5+ GB of fixed top-level heaps: telling them less than the console's 8992 MB starves their
         // remaining heaps at boot.)
         const u32 fixed_mb = (u32)((fixed_kb + 1023) >> 10);
