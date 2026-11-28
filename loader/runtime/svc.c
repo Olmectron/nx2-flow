@@ -27,7 +27,12 @@ void nx2_heap_pool(u64 mb) {
         nx2_log("[vam] <folder>/vam is there, but this game's heap is not the kernel's own: no pool\n");
         return;
     }
-    live_host += nx2_vam_init(live_base, live_host, mb);
+    const u64 got = nx2_vam_init(live_base, live_host, mb);
+    live_host += got;
+    // (The pool comes out of the heap the game is told of: told of the whole, a game that sizes its heap by it asked the kernel
+    // for the pool's bytes more than there are, and was refused.)
+    heap_max = heap_max > got ? heap_max - got : 0;
+    if (got) nx2_log("[vam] the game is told of %u MB of heap now, the pool's %u MB less\n", heap_max >> 20, got >> 20);
 }
 
 static u32 counts[0xC0];
