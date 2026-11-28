@@ -104,22 +104,28 @@ inline void DrawFocusRing(Canvas& c, int x, int y, int w, int h, int radius, flo
     c.RoundBorder(x - 3, y - 3, w + 6, h + 6, radius + 3, 3, ring, inner);
 }
 
-/// Bilinear sample of `img` at (u, v) in pixels.
+/// Bilinear sample of `img` at (u, v) in pixels (8-bit fixed-point SWAR).
 inline u32 SampleImage(const Image& img, float u, float v) {
     u = std::clamp(u, 0.0f, static_cast<float>(img.w - 1));
     v = std::clamp(v, 0.0f, static_cast<float>(img.h - 1));
     const int x0 = static_cast<int>(u), y0 = static_cast<int>(v);
     const int x1 = std::min(x0 + 1, img.w - 1), y1 = std::min(y0 + 1, img.h - 1);
-    const float fx = u - x0, fy = v - y0;
-    const u32 c00 = img.px[y0 * img.w + x0], c10 = img.px[y0 * img.w + x1];
-    const u32 c01 = img.px[y1 * img.w + x0], c11 = img.px[y1 * img.w + x1];
-    u32 out = 0xFF000000u;
-    for (int shift = 0; shift < 24; shift += 8) {
-        const float top = ((c00 >> shift) & 0xFF) * (1 - fx) + ((c10 >> shift) & 0xFF) * fx;
-        const float bot = ((c01 >> shift) & 0xFF) * (1 - fx) + ((c11 >> shift) & 0xFF) * fx;
-        out |= (static_cast<u32>(top * (1 - fy) + bot * fy + 0.5f) & 0xFF) << shift;
-    }
-    return out;
+    const u32 fx = static_cast<u32>((u - x0) * 256.0f + 0.5f);
+    const u32 fy = static_cast<u32>((v - y0) * 256.0f + 0.5f);
+    const u32 wx0 = 256u - fx, wy0 = 256u - fy;
+    const u32 w00 = (wx0 * wy0) >> 8;
+    const u32 w10 = (fx * wy0) >> 8;
+    const u32 w01 = (wx0 * fy) >> 8;
+    const u32 w11 = 256u - w00 - w10 - w01;
+    const u32* const row0 = img.px.data() + static_cast<std::size_t>(y0) * img.w;
+    const u32* const row1 = img.px.data() + static_cast<std::size_t>(y1) * img.w;
+    const u32 c00 = row0[x0], c10 = row0[x1], c01 = row1[x0], c11 = row1[x1];
+    const u32 rb = ((c00 & 0x00FF00FFu) * w00 + (c10 & 0x00FF00FFu) * w10 +
+                    (c01 & 0x00FF00FFu) * w01 + (c11 & 0x00FF00FFu) * w11 + 0x00800080u) >> 8;
+    const u32 ga = (((c00 >> 8) & 0x00FF00FFu) * w00 + ((c10 >> 8) & 0x00FF00FFu) * w10 +
+                    ((c01 >> 8) & 0x00FF00FFu) * w01 + ((c11 >> 8) & 0x00FF00FFu) * w11 +
+                    0x00800080u) >> 8;
+    return (rb & 0x00FF00FFu) | ((ga & 0x00FF00FFu) << 8);
 }
 
 /// Where a picture lands on screen: a quad whose left and right edges are vertical, which is
@@ -156,6 +162,11 @@ inline void BlitQuad(Canvas& c, const Image& img, const Quad& q, float u0, float
     u32* const pixels = c.Data();
     const int stride = c.Width();
     for (int x = xa; x < xb; ++x) {
+        const float cov_x =
+            std::clamp(std::min(x + 1.0f, q.x1) - std::max(static_cast<float>(x), q.x0), 0.0f, 1.0f);
+        if (cov_x <= 0.0f) {
+            continue;
+        }
         const float t = std::clamp((x + 0.5f - q.x0) / (q.x1 - q.x0), 0.0f, 1.0f);
         const float top = q.top0 + (q.top1 - q.top0) * t;
         const float h = q.h0 + (q.h1 - q.h0) * t;
@@ -172,18 +183,26 @@ inline void BlitQuad(Canvas& c, const Image& img, const Quad& q, float u0, float
         const int yb = std::min(c.Height(), static_cast<int>(std::ceil(y_end)));
         const float v_step = (img.h - 1) / h;
         for (int y = ya; y < yb; ++y) {
-            float v;
-            u32 fade = 256;
-            if (mirror) {
-                v = (img.h - 1) - (y + 0.5f - y_begin) * v_step; // Bottom row first.
-                const float f = 1.0f - (y + 0.5f - y_begin) / (y_end - y_begin);
-                fade = static_cast<u32>(64.0f * std::clamp(f * f, 0.0f, 1.0f));
-            } else {
-                v = (y + 0.5f - top) * v_step;
-            }
-            if (v < 0.0f || v > static_cast<float>(img.h - 1)) {
+            const float cov_y =
+                std::clamp(std::min(y + 1.0f, y_end) - std::max(static_cast<float>(y), y_begin), 0.0f, 1.0f);
+            const float cov = cov_x * cov_y;
+            if (cov <= 0.0f) {
                 continue;
             }
+            float v;
+            u32 fade;
+            if (mirror) {
+                v = (img.h - 1) - (y + 0.5f - y_begin) * v_step; // Bottom row first.
+                const float f = std::clamp(1.0f - (y + 0.5f - y_begin) / (y_end - y_begin), 0.0f, 1.0f);
+                fade = static_cast<u32>(64.0f * f * f * cov + 0.5f);
+            } else {
+                v = (y + 0.5f - top) * v_step;
+                fade = static_cast<u32>(256.0f * cov + 0.5f);
+            }
+            if (fade == 0) {
+                continue;
+            }
+            v = std::clamp(v, 0.0f, static_cast<float>(img.h - 1));
             const u32 color =
                 smooth ? SampleImage(img, u, v)
                        : img.px[static_cast<std::size_t>(static_cast<int>(v + 0.5f)) * img.w + ui];
@@ -499,19 +518,33 @@ struct BoxFace {
     float w{1}, h{1};   // The face's size, in case heights.
     float u0{}, u1{1};  // The part of the picture that goes across it.
     u32 plastic{};      // The case itself, where no print covers it.
+    float corner_px{};  // Approximate screen pixels per case-height unit (for corner AA).
 };
 
 /// The small things that make a case a case rather than a painted block. Returns false for
 /// a point outside the face's rounded corners. `plastic` says the bare case shows there;
-/// `dark` is how much darker that point is (a groove, a crease).
-inline bool CaseDetail(const BoxFace& f, float s, float t, bool& plastic, float& dark) {
+/// `dark` is how much darker that point is (a groove, a crease); `corner_cov` is the
+/// anti-aliased corner coverage in 0..1.
+inline bool CaseDetail(const BoxFace& f, float s, float t, bool& plastic, float& dark,
+                       float& corner_cov) {
+    s = std::clamp(s, 0.0f, 1.0f);
+    t = std::clamp(t, 0.0f, 1.0f);
     const float x = s * f.w, y = t * f.h;
-    // Corners: gently rounded in the plane of the face.
+    // Corners: gently rounded in the plane of the face, anti-aliased when projected size is known.
     const float r = std::min(0.024f, std::min(f.w, f.h) * 0.30f);
     const float cx = x < r ? r - x : x > f.w - r ? x - (f.w - r) : 0.0f;
     const float cy = y < r ? r - y : y > f.h - r ? y - (f.h - r) : 0.0f;
-    if (cx > 0.0f && cy > 0.0f && cx * cx + cy * cy > r * r) {
-        return false;
+    corner_cov = 1.0f;
+    if (cx > 0.0f && cy > 0.0f) {
+        const float dist = std::sqrt(cx * cx + cy * cy);
+        if (f.corner_px > 0.0f) {
+            corner_cov = std::clamp((r - dist) * f.corner_px + 0.5f, 0.0f, 1.0f);
+            if (corner_cov <= 0.0f) {
+                return false;
+            }
+        } else if (dist > r) {
+            return false;
+        }
     }
     plastic = false;
     dark = 0.0f;
@@ -568,19 +601,22 @@ inline bool CaseDetail(const BoxFace& f, float s, float t, bool& plastic, float&
 
 /// One triangle of a face, with the picture laid on it in true perspective. Without a
 /// picture it is filled with `solid`. With `mirror_floor` at or above zero the pixels are a
-/// reflection: they fade out over `mirror_span` pixels below that line.
+/// reflection: they fade out over `mirror_span` pixels below that line. `aa_edges` marks which
+/// of the three barycentric weights (bit 0 = wa / opposite b-d, bit 1 = wb / opposite d-a,
+/// bit 2 = wd / opposite a-b) lie on an outer silhouette edge to anti-alias.
 inline void FillBoxTriangle(Canvas& c, const Image* img, u32 solid, const BoxFace& face,
                             const BoxVertex& a, const BoxVertex& b, const BoxVertex& d,
                             float shade, u32 shade_to, bool smooth, float mirror_floor,
-                            float mirror_span) {
+                            float mirror_span, u8 aa_edges = 0) {
     const float area = (b.x - a.x) * (d.y - a.y) - (b.y - a.y) * (d.x - a.x);
     if (std::abs(area) < 0.5f) {
         return;
     }
-    const int x0 = std::max(0, static_cast<int>(std::floor(std::min({a.x, b.x, d.x}))));
-    const int x1 = std::min(c.Width() - 1, static_cast<int>(std::ceil(std::max({a.x, b.x, d.x}))));
-    const int y0 = std::max(0, static_cast<int>(std::floor(std::min({a.y, b.y, d.y}))));
-    const int y1 = std::min(c.Height() - 1, static_cast<int>(std::ceil(std::max({a.y, b.y, d.y}))));
+    const int pad = aa_edges ? 1 : 0;
+    const int x0 = std::max(0, static_cast<int>(std::floor(std::min({a.x, b.x, d.x}))) - pad);
+    const int x1 = std::min(c.Width() - 1, static_cast<int>(std::ceil(std::max({a.x, b.x, d.x}))) + pad);
+    const int y0 = std::max(0, static_cast<int>(std::floor(std::min({a.y, b.y, d.y}))) - pad);
+    const int y1 = std::min(c.Height() - 1, static_cast<int>(std::ceil(std::max({a.y, b.y, d.y}))) + pad);
     if (x0 > x1 || y0 > y1) {
         return;
     }
@@ -588,6 +624,16 @@ inline void FillBoxTriangle(Canvas& c, const Image* img, u32 solid, const BoxFac
     // Weights of a, b and d at a point, each a plane over the screen.
     const float wa_dx = (b.y - d.y) * inv_area, wa_dy = (d.x - b.x) * inv_area;
     const float wb_dx = (d.y - a.y) * inv_area, wb_dy = (a.x - d.x) * inv_area;
+    const float wd_dx = -wa_dx - wb_dx, wd_dy = -wa_dy - wb_dy;
+    const float grad_a = (aa_edges & 1u) ? std::hypot(wa_dx, wa_dy) : 0.0f;
+    const float grad_b = (aa_edges & 2u) ? std::hypot(wb_dx, wb_dy) : 0.0f;
+    const float grad_d = (aa_edges & 4u) ? std::hypot(wd_dx, wd_dy) : 0.0f;
+    const float tol_a = grad_a > 0.0f ? 0.5f * grad_a : 0.0005f;
+    const float tol_b = grad_b > 0.0f ? 0.5f * grad_b : 0.0005f;
+    const float tol_d = grad_d > 0.0f ? 0.5f * grad_d : 0.0005f;
+    const float inv_grad_a = grad_a > 0.0f ? 1.0f / grad_a : 0.0f;
+    const float inv_grad_b = grad_b > 0.0f ? 1.0f / grad_b : 0.0f;
+    const float inv_grad_d = grad_d > 0.0f ? 1.0f / grad_d : 0.0f;
     const u32 keep = static_cast<u32>((1.0f - std::clamp(shade, 0.0f, 1.0f)) * 256.0f);
     const u32 lose = 256 - keep;
     const u32 tr = shade_to & 0xFF, tg = (shade_to >> 8) & 0xFF, tb = (shade_to >> 16) & 0xFF;
@@ -598,23 +644,34 @@ inline void FillBoxTriangle(Canvas& c, const Image* img, u32 solid, const BoxFac
     const int stride = c.Width();
     for (int y = y0; y <= y1; ++y) {
         const float py = y + 0.5f;
-        u32 fade = 256;
+        u32 base_fade = 256;
         if (mirror_floor >= 0.0f) {
             const float f = 1.0f - (py - mirror_floor) / std::max(mirror_span, 1.0f);
             if (f <= 0.0f || py < mirror_floor) {
                 continue;
             }
-            fade = static_cast<u32>(64.0f * f * f);
+            base_fade = static_cast<u32>(64.0f * f * f);
         }
         const float px0 = x0 + 0.5f;
         float wa = ((b.x - px0) * (d.y - py) - (b.y - py) * (d.x - px0)) * inv_area;
         float wb = ((d.x - px0) * (a.y - py) - (d.y - py) * (a.x - px0)) * inv_area;
-        (void)wa_dy;
-        (void)wb_dy;
         u32* row = pixels + static_cast<std::size_t>(y) * stride;
         for (int x = x0; x <= x1; ++x, wa += wa_dx, wb += wb_dx) {
             const float wd = 1.0f - wa - wb;
-            if (wa < -0.0005f || wb < -0.0005f || wd < -0.0005f) {
+            if (wa < -tol_a || wb < -tol_b || wd < -tol_d) {
+                continue;
+            }
+            float edge_cov = 1.0f;
+            if (inv_grad_a > 0.0f && wa < tol_a) {
+                edge_cov = std::min(edge_cov, std::clamp(wa * inv_grad_a + 0.5f, 0.0f, 1.0f));
+            }
+            if (inv_grad_b > 0.0f && wb < tol_b) {
+                edge_cov = std::min(edge_cov, std::clamp(wb * inv_grad_b + 0.5f, 0.0f, 1.0f));
+            }
+            if (inv_grad_d > 0.0f && wd < tol_d) {
+                edge_cov = std::min(edge_cov, std::clamp(wd * inv_grad_d + 0.5f, 0.0f, 1.0f));
+            }
+            if (edge_cov <= 0.0f) {
                 continue;
             }
             u32 color = solid;
@@ -623,11 +680,19 @@ inline void FillBoxTriangle(Canvas& c, const Image* img, u32 solid, const BoxFac
                 continue;
             }
             // Where on the face this pixel is, in true perspective.
-            const float fs = (wa * a.u * a.w + wb * b.u * b.w + wd * d.u * d.w) / q;
-            const float ft = (wa * a.v * a.w + wb * b.v * b.w + wd * d.v * d.w) / q;
+            const float fs = std::clamp((wa * a.u * a.w + wb * b.u * b.w + wd * d.u * d.w) / q, 0.0f, 1.0f);
+            const float ft = std::clamp((wa * a.v * a.w + wb * b.v * b.w + wd * d.v * d.w) / q, 0.0f, 1.0f);
             bool bare = false;
             float dark = 0.0f;
-            if (!CaseDetail(face, fs, ft, bare, dark)) {
+            float corner_cov = 1.0f;
+            if (!CaseDetail(face, fs, ft, bare, dark, corner_cov)) {
+                continue;
+            }
+            const u32 fade =
+                (edge_cov < 1.0f || corner_cov < 1.0f)
+                    ? static_cast<u32>(static_cast<float>(base_fade) * edge_cov * corner_cov + 0.5f)
+                    : base_fade;
+            if (fade == 0) {
                 continue;
             }
             if (bare) {
@@ -752,17 +817,33 @@ inline void DrawCase3D(Canvas& c, Font& font, const ShelfItem& item, const BoxPo
         {{{-1, -1, 1}, {1, -1, 1}, {1, -1, -1}, {-1, -1, -1}}, {0, -1, 0}, 4},
         {{{-1, 1, -1}, {1, 1, -1}, {1, 1, 1}, {-1, 1, 1}}, {0, 1, 0}, 5},
     };
+    static constexpr int adj[6][4] = {
+        {4, 3, 5, 2}, // 0 front
+        {4, 2, 5, 3}, // 1 back
+        {4, 0, 5, 1}, // 2 spine
+        {4, 1, 5, 0}, // 3 opening side
+        {1, 3, 0, 2}, // 4 top
+        {0, 3, 1, 2}, // 5 bottom
+    };
+    BoxVertex projected[6][4];
+    bool visible[6] = {};
+    for (int fi = 0; fi < 6; ++fi) {
+        for (int i = 0; i < 4; ++i) {
+            projected[fi][i] = project(faces[fi].corner[i][0], faces[fi].corner[i][1], faces[fi].corner[i][2]);
+        }
+        const float facing = (projected[fi][1].x - projected[fi][0].x) * (projected[fi][2].y - projected[fi][0].y) -
+                             (projected[fi][1].y - projected[fi][0].y) * (projected[fi][2].x - projected[fi][0].x);
+        visible[fi] = facing > 0.5f;
+    }
     const float mirror_span = H * 0.42f;
-    for (const Face& face : faces) {
+    for (int fi = 0; fi < 6; ++fi) {
+        if (!visible[fi]) {
+            continue;
+        }
+        const Face& face = faces[fi];
         BoxVertex v[4];
         for (int i = 0; i < 4; ++i) {
-            v[i] = project(face.corner[i][0], face.corner[i][1], face.corner[i][2]);
-        }
-        // Clockwise on screen means it faces the eye.
-        const float facing =
-            (v[1].x - v[0].x) * (v[2].y - v[0].y) - (v[1].y - v[0].y) * (v[2].x - v[0].x);
-        if (facing <= 0.5f) {
-            continue;
+            v[i] = projected[fi][i];
         }
         const P3 n = turn(static_cast<float>(face.normal[0]), static_cast<float>(face.normal[1]),
                           static_cast<float>(face.normal[2]));
@@ -816,10 +897,15 @@ inline void DrawCase3D(Canvas& c, Font& font, const ShelfItem& item, const BoxPo
                 vertex.y = 2.0f * mirror_floor - vertex.y;
             }
         }
+        info.corner_px = std::hypot(v[3].x - v[0].x, v[3].y - v[0].y) / std::max(info.h, 0.01f);
+        // Triangle (v0, v1, v2): edge 0 is a-b (wd, bit 2), edge 1 is b-d (wa, bit 0), diagonal is d-a (wb).
+        const u8 mask0 = static_cast<u8>((!visible[adj[fi][1]] ? 1u : 0u) | (!visible[adj[fi][0]] ? 4u : 0u));
+        // Triangle (v0, v2, v3): edge 2 is b-d (wa, bit 0), edge 3 is d-a (wb, bit 1), diagonal is a-b (wd).
+        const u8 mask1 = static_cast<u8>((!visible[adj[fi][2]] ? 1u : 0u) | (!visible[adj[fi][3]] ? 2u : 0u));
         FillBoxTriangle(c, img, solid, info, v[0], v[1], v[2], shade, shade_to, smooth,
-                        mirror_floor, mirror_span);
+                        mirror_floor, mirror_span, mask0);
         FillBoxTriangle(c, img, solid, info, v[0], v[2], v[3], shade, shade_to, smooth,
-                        mirror_floor, mirror_span);
+                        mirror_floor, mirror_span, mask1);
 
         // A back with nothing printed on it says what is known about the game, once it is
         // square on and large enough to read.
@@ -1042,7 +1128,7 @@ inline void DrawShelfCases(Canvas& c, Font& font, const ShelfView& v,
         if (mirror) {
             DrawCase3D(c, font, item, p, shade_to, false, floor);
         } else {
-            DrawCase3D(c, font, item, p, shade_to, selected);
+            DrawCase3D(c, font, item, p, shade_to, true);
         }
     };
 
@@ -1161,7 +1247,7 @@ inline void DrawShelf(Canvas& c, Font& font, const ShelfView& v,
                 if (forward < 0.5f) {
                     BlitQuad(c, icon_image, q, 0.0f, 1.0f, p.shade, shade_to, true, false, gap);
                 }
-                BlitQuad(c, icon_image, q, 0.0f, 1.0f, p.shade, shade_to, false, selected);
+                BlitQuad(c, icon_image, q, 0.0f, 1.0f, p.shade, shade_to, false, true);
             } else {
                 // Not even an icon: a soft disc with the first letter of the title.
                 const float r = side / 2;
@@ -1248,7 +1334,7 @@ inline void DrawShelf(Canvas& c, Font& font, const ShelfView& v,
             }
         }
         BlitQuad(c, *item.cover, q, u0, u1, p.shade, shade_to, true, false, gap);
-        BlitQuad(c, *item.cover, q, u0, u1, p.shade, shade_to, false, selected);
+        BlitQuad(c, *item.cover, q, u0, u1, p.shade, shade_to, false, true);
     };
 
     // Far to near, so nearer covers overlap the ones behind; the selected one goes last.

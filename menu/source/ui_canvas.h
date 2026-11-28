@@ -183,17 +183,50 @@ public:
     }
 
     void FillRoundRect(int x, int y, int w, int h, int r, u32 color) {
+        if (w <= 0 || h <= 0) {
+            return;
+        }
         r = std::clamp(r, 0, std::min(w, h) / 2);
-        for (int row = 0; row < h; ++row) {
-            int cut = 0;
-            if (row < r) {
-                const int t = r - 1 - row;
-                cut = r - static_cast<int>(std::sqrt(static_cast<float>(r * r - t * t)));
-            } else if (row >= h - r) {
-                const int t = row - (h - r);
-                cut = r - static_cast<int>(std::sqrt(static_cast<float>(r * r - t * t)));
+        if (r == 0) {
+            FillRect(x, y, w, h, color);
+            return;
+        }
+        if (h > 2 * r) {
+            FillRect(x, y + r, w, h - 2 * r, color);
+        }
+        if (w > 2 * r) {
+            FillRect(x + r, y, w - 2 * r, r, color);
+            FillRect(x + r, y + h - r, w - 2 * r, r, color);
+        }
+        const float rf = static_cast<float>(r);
+        const u8 alpha = static_cast<u8>((color >> 24) & 0xFF);
+        const int corners[4][4] = {
+            {x, y, x + r, y + r},
+            {x + w - r, y, x + w - r, y + r},
+            {x, y + h - r, x + r, y + h - r},
+            {x + w - r, y + h - r, x + w - r, y + h - r},
+        };
+        for (const auto& box : corners) {
+            const int x0 = std::max(0, box[0]), x1 = std::min(width, box[0] + r);
+            const int y0 = std::max(0, box[1]), y1 = std::min(height, box[1] + r);
+            const float cx = static_cast<float>(box[2]);
+            const float cy = static_cast<float>(box[3]);
+            for (int py = y0; py < y1; ++py) {
+                const float dy = py + 0.5f - cy;
+                for (int px = x0; px < x1; ++px) {
+                    const float dx = px + 0.5f - cx;
+                    const float cover = std::clamp(rf - std::sqrt(dx * dx + dy * dy) + 0.5f, 0.0f, 1.0f);
+                    if (cover >= 1.0f) {
+                        if (alpha >= 0xFF) {
+                            pixels[static_cast<std::size_t>(py) * width + px] = color;
+                        } else {
+                            Blend(px, py, color, 255);
+                        }
+                    } else if (cover > 0.0f) {
+                        Blend(px, py, color, static_cast<u8>(cover * 255.0f + 0.5f));
+                    }
+                }
             }
-            FillRect(x + cut, y + row, w - 2 * cut, 1, color);
         }
     }
 
