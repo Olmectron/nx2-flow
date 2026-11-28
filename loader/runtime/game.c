@@ -35,6 +35,8 @@ s64 nx2_zbic_to_zstd(const u8 *data, u64 size, u8 *out, u64 room);  // zbic.c
 char nx2_game_id[17] = "unknown";
 char nx2_game_display_version[16];
 u64 nx2_game_title_id;
+char nx2_mods_code[FS_MAX_PATH];
+char nx2_game_update_label[16];
 // (What the game is told of memory, as a port is built: with no figure given and nothing kept apart, what there really is less
 // 400 MB, 8192 at most; the console's 8992 for a game whose table of heaps keeps a stretch apart; game.cfg's figure otherwise.
 // tools/build.py and main.c have the story.)
@@ -720,6 +722,8 @@ static int lay_card(Rom *r, FsFileSystem *sd, const char *path, u32 to, int dept
         for (s64 e = 0; e < got; e++) {
             const u64 len = strlen(entries[e].name), path_len = strlen(path);
             if (path_len + 1 + len >= FS_MAX_PATH) continue;
+            // (the folder Code at the set's top isn't the game's: it holds the mods' code and switches, hook.c)
+            if (!depth && entries[e].type == FsDirEntryType_Dir && !strcmp(entries[e].name, "Code")) continue;
             char full[FS_MAX_PATH];
             memcpy(full, path, path_len), full[path_len] = '/', memcpy(full + path_len + 1, entries[e].name, len + 1);
             char *kept = loose_add(r, full, path_len + 1 + len);  // (the whole path; its last part is the name)
@@ -1582,6 +1586,11 @@ int nx2_game_open(const char *path) {
             nx2_big_free(meta);
         }
         if (nx2_game_display_version[0]) nx2_log("[game] display version from NUP: \"%s\"\n", nx2_game_display_version);
+        // (the version as nx2-relink's tools name it when a dump shows none, "update 2" from the newest package's number: a
+        // hook file made with them says that one, hook.c)
+        const u32 v = count ? nup_package(layers[count - 1]).version : 0;
+        if (v >> 16) snprintf(nx2_game_update_label, sizeof nx2_game_update_label, "update %u", v >> 16);
+        else nx2_game_update_label[0] = 0;
     }
     {  // user account save data size from the newest package's control.nacp TLV (default for nn::fs::GetSaveDataSize before ExtendSaveData)
         nx2_game_save_data_size = 0, nx2_game_save_journal_size = 0;
@@ -1646,11 +1655,19 @@ int nx2_game_open(const char *path) {
     }
     setting("modset", modset, sizeof modset);
     {
-        char folder[FS_MAX_PATH];
+        char folder[FS_MAX_PATH], said[8];
         if (modset[0]) snprintf(folder, sizeof folder, "%s/modsets/%s", home, modset);
         else snprintf(folder, sizeof folder, "%s/mods", home);
+        setting("mods", said, sizeof said);
+        const int mods_off = !strcmp(said, "off");
+        setting("hooks", said, sizeof said);
+        // (the code of the mods, hook.c: the set's Code/ folder, unless game.cfg says mods=off or hooks=off)
+        if (mods_off || !strcmp(said, "off")) nx2_mods_code[0] = 0;
+        else snprintf(nx2_mods_code, sizeof nx2_mods_code, "sdmc:%s/Code", folder);
         roms[0].replaced = roms[0].added = 0;
-        if (!lay_card(&roms[0], fsdevGetDeviceFileSystem("sdmc"), folder, 0, 0))
+        if (mods_off) nx2_log("[mods] game.cfg says mods=off: the game's own files alone, and no code of a mod\n");
+        else if (!strcmp(said, "off")) nx2_log("[mods] game.cfg says hooks=off: no code of a mod is loaded\n");
+        if (!mods_off && !lay_card(&roms[0], fsdevGetDeviceFileSystem("sdmc"), folder, 0, 0))
             nx2_log("[mods] sdmc:%s: %u files laid over the game's own, %u more that the game hasn't\n", folder, (u64)roms[0].replaced, (u64)roms[0].added);
     }
     if (rom_build(&roms[0])) {

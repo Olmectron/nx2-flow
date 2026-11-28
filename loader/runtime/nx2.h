@@ -35,6 +35,8 @@ extern char nx2_game_id[17];               // the title id, 16 hex digits
 extern char nx2_game_display_version[16];  // display version from the NUP file's metadata/NACP (empty if absent)
 int nx2_nup_meta_display_version(const u8 *block, u32 block_size, char out[16]);
 extern u64 nx2_game_title_id;          // the title id, as a 64-bit integer
+extern char nx2_game_update_label[16];  // "update 2": the newest package's number, as nx2-relink's tools name a version (hook.c)
+extern char nx2_mods_code[];           // "sdmc:<the mod set>/Code", its code (hook.c); empty: mods=off or hooks=off in game.cfg
 const char *nx2_home(void);            // "/nx2-flow/<title id>", as the file system service is given it
 const char *nx2_file(const char *name);  // "sdmc:/nx2-flow/<title id>/<name>": good until eight more have been asked for
 #define NX2_F(name) nx2_file(name)
@@ -106,6 +108,10 @@ void nx2_svc_verbose(int on);  // 1: every call logged (a budget of them)
 void nx2_heap_set(void *base, u64 size);  // the block SetHeapSize hands the game
 // ro.c: the modules a Switch 2 game loads as it runs (nn::ro), through kaiHEN's loader service
 void nx2_ro_start(void);
+// hook.c: the code of the mods (.nxh files in the mod set's Code/ folder), mapped and called once, the modules in memory and
+// their relocations done, before any initializer of the game's runs
+void nx2_hooks_install(void);
+void nx2_port_hooks(void) __attribute__((weak));
 int nx2_ro_ipc(u8 *m, const u8 *q, u32 cmd, const char *module, u64 off);  // 1: the message was seen to (the kernel's word in nx2_ro_kernel)
 extern u32 nx2_ro_kernel;
 void nx2_crash(const char *why);  // the run is ending badly, and why: <folder>/crash.txt is written as it ends (log.c)

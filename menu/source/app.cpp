@@ -26,7 +26,13 @@ constexpr int kSavesVisible = 6;
 constexpr int kLogVisible = 21;
 
 // The rows of a game's options, of the settings.
-enum SheetRow { kSheetLog, kSheetMods, kSheetSaves, kSheetAdvanced, kSheetViewLog };
+enum SheetRow { kSheetLog, kSheetModsOn, kSheetMods, kSheetHooks, kSheetSaves, kSheetAdvanced, kSheetViewLog };
+
+// The folder of a mod set, as the loader picks it: mods/ for none, modsets/<name>/ for one.
+static std::string folder_of_set(const Game& game, const std::string& set) {
+    return game.Folder() + (set.empty() ? "/mods" : "/modsets/" + set);
+}
+
 enum AdvancedRow { kAdvancedMemory, kAdvancedRoom };
 enum SettingRow { kSetFolder, kSetShelf, kSetCovers, kSetCases, kSetTheme, kSetDownload, kSetTransfer, kSetCap, kSetRescan };
 
@@ -501,10 +507,24 @@ std::vector<App::Row> App::SheetRows() {
     }
     rows.push_back({"Detailed log", Exists(game->Folder() + "/debug") ? "On" : "Off",
                     "Every call the game makes is written to its log. Slower: for a report of a game that doesn't run.", true});
+    const bool mods_on = Value(game_cfg, "mods") != "off";
+    rows.push_back({"Mods", mods_on ? "On" : "Off",
+                    "Off: the game starts with its own files alone, and no code of a mod is loaded. The mod set is kept for later.", true});
     const std::string set = Value(game_cfg, "modset");
     const bool there = set.empty() || std::find(mod_sets.begin(), mod_sets.end(), set) != mod_sets.end();
     rows.push_back({"Mod set", set.empty() ? "mods (default)" : there ? set : set + " (not there)",
                     "The folder of files laid over the game's own: mods/, or one of the folders of modsets/ in the game's folder.", true});
+    // (the set's Code/ folder: hook files, .nxh, code made for one game and one version of it that the loader maps as the game starts)
+    std::vector<std::string> code_files;
+    ListFolders(folder_of_set(*game, set) + "/Code", &code_files);
+    const auto hook_files = std::count_if(code_files.begin(), code_files.end(), [](const std::string& name) {
+        return name.size() > 4 && name.compare(name.size() - 4, 4, ".nxh") == 0;
+    });
+    const bool hooks_on = Value(game_cfg, "hooks") != "off";
+    const std::string files_said = hook_files == 0 ? "none in this set" : std::to_string(hook_files) + (hook_files == 1 ? " file" : " files");
+    rows.push_back({"Code mods", !mods_on ? "Off (mods are off)" : (hooks_on ? "On, " : "Off, ") + files_said,
+                    "Files .nxh in the mod set's Code/ folder: code made for this game and this version of it, run as the game "
+                    "starts. Each is checked first and the log says what was used. Off: none of them is loaded.", true});
     rows.push_back({"Saved data", SlotInUse(),
                     "The slot of saved data the game uses. A opens the slots: pick another, make an empty one, copy this one."});
     std::string advanced;
@@ -548,6 +568,17 @@ void App::ChangeSheet(int row, int dir, bool press) {
                 Notice("The card couldn't be written to", true);
             }
         }
+        break;
+    }
+    case kSheetModsOn:
+    case kSheetHooks: {
+        const char* key = row == kSheetModsOn ? "mods" : "hooks";
+        if (Value(game_cfg, key) == "off") {
+            game_cfg.erase(key);
+        } else {
+            game_cfg[key] = "off";
+        }
+        WriteGameCfg();
         break;
     }
     case kSheetMods: {
@@ -1506,7 +1537,8 @@ void App::DrawSheet(Canvas& c) {
     if (warn) {
         top += DrawBanner(c, font, x + 28, top, w - 56, HostWarningTitle(host), HostWarningBody(host)) + 10;
     }
-    const int visible = warn ? 4 : 0;
+    // (as many rows as fit above the help's two lines and the facts at the bottom; the rest scroll)
+    const int visible = std::max(3, (y + h - 124 - top - 58) / (kRowH + kRowGap));
     DrawRows(c, x + 28, top, w - 56, rows, sheet_cursor, visible);
     const int shown = visible > 0 ? std::min(static_cast<int>(rows.size()), visible) : static_cast<int>(rows.size());
     if (sheet_cursor < static_cast<int>(rows.size())) {

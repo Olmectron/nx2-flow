@@ -24,6 +24,9 @@ Two homebrew programs for a Switch 2, both in one folder of the card so that the
     log.txt  log.prev.txt  crash.txt the loader's log of the last run, of the one before, and a run that ended badly
     mods/                            files laid over the game's own (the default set)
     modsets/<name>/                  other sets of such files, one folder each
+      (a set's) Code/                not the game's files: mods' code, <name>.nxh (nx2-relink's hook files, made for one
+                                     game and one version of it: checked, then mapped and called before the game starts,
+                                     at most 4), and the empty switch files such code looks for
     exefs_patches/                   IPS / IPS32 patches for the game's modules, named by NSO Build ID (<build_id>.ips[32],
                                      directly here or one subfolder deep as <mod>/<build_id>.ips[32])
     game.cfg                         the game's settings, lines of key=value
@@ -57,7 +60,9 @@ Written by the menu, read by the loader. A key that is absent or empty means the
 
 | key | meaning | default |
 |---|---|---|
+| `mods` | `off`: nothing of the mod set is used, neither its files nor its code | on |
 | `modset` | the folder under `modsets/` to lay over the game | `mods/` |
+| `hooks` | `off`: the mod set's code (`Code/*.nxh`, below) is not loaded; its files still are | on |
 | `save` | the slot of saved data to use: the name of a folder under `saves/` | `save/` (the slot "default") |
 | `memory` | MB the game is told of (2048 to 8992). **Advanced** | decided by the loader |
 | `room` | MB the loader keeps for itself while it opens the game (128 to 2048); what the game turns out not to need of it is given back to the game. **Advanced** | 1024 |
