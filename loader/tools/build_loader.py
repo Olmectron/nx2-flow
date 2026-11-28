@@ -31,13 +31,13 @@ def main():
     for s in sorted(glob.glob(f'{zstd}/common/*.c') + glob.glob(f'{zstd}/decompress/*.c')):
         s = s.replace('\\', '/')
         o = f'{obj}/zstd_{os.path.basename(s)}.o'
-        build.run([build.GCC, '-c', '-O2', '-ffunction-sections', *build.ARCH, *cflags, '-DZSTD_DISABLE_ASM', '-DZSTD_LEGACY_SUPPORT=0', '-DDEBUGLEVEL=0',
+        build.run([build.GCC, '-c', '-O2', '-ffunction-sections', '-fdata-sections', *build.ARCH, *cflags, '-DZSTD_DISABLE_ASM', '-DZSTD_LEGACY_SUPPORT=0', '-DDEBUGLEVEL=0',
                    '-DZSTD_NO_TRACE', f'-I{zstd}', s, '-o', o])
         objs.append(o)
     for s in sorted(glob.glob(f'{ROOT}/runtime/*.c') + glob.glob(f'{ROOT}/runtime/*.s')):
         s = s.replace('\\', '/')
         o = f'{obj}/{os.path.basename(s)}.o'
-        said = build.run([build.GCC, '-c', '-O2', '-g', '-Wall', '-ffunction-sections', *build.ARCH, *cflags, *FOUND, f'-DNX2_VERSION="{VERSION}"', f'-I{ROOT}/runtime',
+        said = build.run([build.GCC, '-c', '-O2', '-g', '-Wall', '-ffunction-sections', '-fdata-sections', *build.ARCH, *cflags, *FOUND, f'-DNX2_VERSION="{VERSION}"', f'-I{ROOT}/runtime',
                           f'-I{zstd}', s, '-o', o])
         if said.strip():
             print(said.rstrip())
