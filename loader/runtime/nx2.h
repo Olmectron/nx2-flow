@@ -119,6 +119,14 @@ void nx2_crash_now(const char *why);  // the same, written before it returns (a 
 void nx2_closing(void);           // the user is closing the game: not a run that ended badly
 void nx2_log_end(void);           // the program returns to where it was started from
 void nx2_heap_live(u64 base, u64 host, u64 most);  // (a Switch 2 game's: no block; the kernel's heap grows after the host's part)
+void nx2_heap_pool(u64 mb);  // svc.c: a pool for the game's address regions put after the host's part (<folder>/vam; vam.c)
+
+// vam.c: the SDK's address regions answered from a pool of the heap, for a title with no system resource (<folder>/vam)
+extern int nx2_vam;
+u64 nx2_vam_init(u64 base, u64 host, u64 mb);  // the pool taken: its bytes, or 0
+void *nx2_vam_override(const char *name);       // the imports it answers, or null
+// peek.c: with <folder>/debug, the files the game opens and the strings it compares, said when it ends itself
+void *nx2_peek_override(const char *name);
 
 // gl2.c (Switch 2): the game's imports that go to the host's OpenGL, or nowhere, in place of the SDK's graphics driver
 void *nx2_override(const char *name);  // what an import of this name is bound to, or null: the modules' own

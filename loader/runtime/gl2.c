@@ -745,6 +745,12 @@ static u32 get_save_data_size_watched(s64 *out_data, s64 *out_journal, const voi
 #endif
 
 void *nx2_override(const char *name) {
+    {  // (<folder>/vam: the SDK's address regions, from a pool; vam.c. <folder>/debug: what the game opened and compared; peek.c)
+        void *v = nx2_vam_override(name);
+        if (v) return v;
+        v = nx2_peek_override(name);
+        if (v) return v;
+    }
     static const struct {
         const char *name;
         void *with;
